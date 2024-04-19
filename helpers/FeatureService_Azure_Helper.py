@@ -9,7 +9,7 @@ Purpose: Help draft parameters, T-SQL, etc. for querying data originating from a
 
 from arcgis.gis import GIS
 from arcgis.features import FeatureLayer
-from itertools import reduce
+from functools import reduce
 gis = GIS(profile="work")
 
 
@@ -88,10 +88,8 @@ def clean_field_name(name : str) -> str:
         'UPDATED_USER': 'Editor'
     }
     clean_name = reduce(lambda a, kv: a.replace(*kv), rename_fields.items(), name)
-    clean_name = name.upper()
+    clean_name = clean_name.upper()
 
-    print(name)
-    print(clean_name)
     return clean_name
 
     
@@ -197,8 +195,26 @@ layers = [
 
 for layer in layers:
     print(layer[0])
-    print('')
-    print(get_featurelayer_field_names(layer[1], gis=gis))
+    # print('')
+    # print(get_featurelayer_field_names(layer[1], gis=gis))
     print('')
     print(get_featurelayer_silversqlprocedure(layer[1], gis=gis, name=layer[0]))
     print('')
+
+# In[ ]:
+sql = ''''''
+for layer_name in [x[0] for x in layers]:
+    sql += f"""
+SELECT
+'OBJECTID,
+STATUS,
+CLASS,
+CATEGORY,
+SUBCATEGORY,
+PARK_NAME,
+PARK_CODE,
+LOCATION_NAME,
+LOCATION_CODE,
+TRAIL_NAME,
+GISOBJID, MATERIAL, SIZE_, MGMT_AREA, MGMT_REGION, WITHDRAW, GLOBALID, DESCRIPTION, OWNER, MANAGER, ADA_COMPLIANT, ADA_ACCESSIBLE, HISTORIC, CLUSTER_ID, COMMISS, CREATED_DATE, UPDATED_DATE, CREATED_USER, UPDATED_USER, PARENT, LATEST_QAQC, ASSET'
+"""
