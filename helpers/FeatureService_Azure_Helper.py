@@ -106,7 +106,7 @@ def get_featurelayer_silversqlfields(
         'esriFieldTypeOID': lambda field: f"CAST([{field['name']}] AS INT) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeGlobalID': lambda field: f"CAST([{field['name']}] AS CHAR(36)) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeGUID': lambda field: f"CAST([{field['name']}] AS CHAR(36)) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeDate': lambda field: f"""DATEADD(S, [{field['name']}]/1000, ''1970-01-01'') AT TIME ZONE ''UTC'' AT TIME ZONE ''Eastern Standard Time'' AS [{clean_field_name(field['name'])}]""",
+        'esriFieldTypeDate': lambda field: f"""DATEADD(S, CAST([{field['name']}] AS FLOAT)/1000, ''1970-01-01'') AT TIME ZONE ''UTC'' AT TIME ZONE ''Eastern Standard Time'' AS [{clean_field_name(field['name'])}]""",
         'esriFieldTypeDouble' : lambda field: f"CAST([{field['name']}] AS NUMERIC(38, 8)) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeFloat' : lambda field: f"CAST([{field['name']}] AS NUMERIC(12, 6)) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeSingle' : lambda field: f"CAST([{field['name']}] AS NUMERIC(12, 6)) AS [{clean_field_name(field['name'])}]",
@@ -160,6 +160,17 @@ BEGIN
     DATA_SOURCE ='+ @external_data_source + ', 
     FILE_FORMAT ='+ @external_file_format +') AS 
 select
+    CAST(
+        CASE
+            WHEN [INGEST_TS] < (
+                    SELECT
+                        MAX([INGEST_TS])
+                    FROM
+                        [bronze].[B_GIS_{name_upper}]
+                ) THEN 1
+            ELSE 0
+        END
+    AS BIT) AS [DELETED],
 {field_selection}
 from (select *, row_number() over(partition by OBJECTID order by UPDATED_DATE desc) as row_num from bronze.B_GIS_{name_upper})t1
 where row_num=1'
@@ -183,38 +194,201 @@ EXECUTE dbo.USP_S_GIS_{name_upper}
 
 """
     return procedure
+
+def get_prefixed_field_aliases(
+    sql : str,
+    prefix : str
+) -> str:
+    new_sql = ''
+    for line in sql.split('\n')[1:-1]:
+        new_line = line.replace('[', f'[{prefix.lower()}].[')
+        field_name = line.split('[')[1].split(']')[0]
+        new_sql += new_line + f' AS [{prefix}_{field_name}]\n'
+
+    return new_sql
 # In[50]:
 
 layers = [
-    ('Benches', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Montgomery_Parks_Benches/FeatureServer/0'), # 19ce5bf022dc4193aeac8b18833e094f
-    ('BikeAssets', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Bike_Assets/FeatureServer/0'), # 46de90ff5980452b9beffe37d377252a
-    ('Kiosks', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Kiosks_and_Signs/FeatureServer/1'), # d4a8d962a98a4944bfd665fe8bea2fcb
-    ('SignLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Kiosks_and_Signs/FeatureServer/0'), # d4a8d962a98a4944bfd665fe8bea2fcb
-    ('AssetsOther', 'https://montgomeryplans.org/server/rest/services/Parks/Assets_Pt/FeatureServer/0')
+    # ('Benches', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Montgomery_Parks_Benches/FeatureServer/0'), # 19ce5bf022dc4193aeac8b18833e094f
+    # ('BikeAssets', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Bike_Assets/FeatureServer/0'), # 46de90ff5980452b9beffe37d377252a
+    # ('Kiosks', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Kiosks_and_Signs/FeatureServer/1'), # d4a8d962a98a4944bfd665fe8bea2fcb
+    # ('SignLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Kiosks_and_Signs/FeatureServer/0'), # d4a8d962a98a4944bfd665fe8bea2fcb
+    # ('AssetsOther', 'https://montgomeryplans.org/server/rest/services/Parks/Assets_Pt/FeatureServer/0'),
+    # ('Courts', 'https://montgomeryplans.org/server/rest/services/Courts/Courts/FeatureServer/0'), # 151a6f063c2a468fa927c2150d909da1
+    # ('CourtPads', 'https://montgomeryplans.org/server/rest/services/Courts/Courts/FeatureServer/1'), # 151a6f063c2a468fa927c2150d909da1
+    ('PortaJohnLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Portajohn_Locations/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
+    ('PicnicShelters', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/PicnicShelters/FeatureServer/0'), # a067549da0e44ad59fe4e5999cca3304
 ]
 
 for layer in layers:
     print(layer[0])
     # print('')
-    # print(get_featurelayer_field_names(layer[1], gis=gis))
+    print(get_featurelayer_field_names(layer[1], gis=gis))
     print('')
     print(get_featurelayer_silversqlprocedure(layer[1], gis=gis, name=layer[0]))
     print('')
 
 # In[ ]:
-sql = ''''''
-for layer_name in [x[0] for x in layers]:
-    sql += f"""
-SELECT
-'OBJECTID,
-STATUS,
-CLASS,
-CATEGORY,
-SUBCATEGORY,
-PARK_NAME,
-PARK_CODE,
-LOCATION_NAME,
-LOCATION_CODE,
-TRAIL_NAME,
-GISOBJID, MATERIAL, SIZE_, MGMT_AREA, MGMT_REGION, WITHDRAW, GLOBALID, DESCRIPTION, OWNER, MANAGER, ADA_COMPLIANT, ADA_ACCESSIBLE, HISTORIC, CLUSTER_ID, COMMISS, CREATED_DATE, UPDATED_DATE, CREATED_USER, UPDATED_USER, PARENT, LATEST_QAQC, ASSET'
-"""
+# sql = ''''''
+# for layer_name in [x[0] for x in layers]:
+#     sql += f"""
+# SELECT
+# 'OBJECTID,
+# STATUS,
+# CLASS,
+# CATEGORY,
+# SUBCATEGORY,
+# PARK_NAME,
+# PARK_CODE,
+# LOCATION_NAME,
+# LOCATION_CODE,
+# TRAIL_NAME,
+# GISOBJID, MATERIAL, SIZE_, MGMT_AREA, MGMT_REGION, WITHDRAW, GLOBALID, DESCRIPTION, OWNER, MANAGER, ADA_COMPLIANT, ADA_ACCESSIBLE, HISTORIC, CLUSTER_ID, COMMISS, CREATED_DATE, UPDATED_DATE, CREATED_USER, UPDATED_USER, PARENT, LATEST_QAQC, ASSET'
+# """
+
+# In[ ]:
+sql = '''
+[LASTSAVED]
+,[OBTYPE]
+,[OBTYPEDESC]
+,[OBRTYPE]
+,[CODE]
+,[DESC]
+,[CLASS]
+,[CLASSDESC]
+,[CATEGORY]
+,[CATEGORYDESC]
+,[LOCATION]
+,[PARENT]
+,[MANUFACT]
+,[MRC]
+,[MRCDESC]
+,[OWNER]
+,[OWNERDESC]
+,[SERIALNO]
+,[STATUS]
+,[STATUSDESC]
+,[RSTATUS]
+,[COMMISS]
+,[WITHDRAW]
+,[RECORD]
+,[GROUP]
+,[USER]
+,[PRODUCTION]
+,[PRIMARYUOM]
+,[ACD]
+,[NOTUSED]
+,[MANUFACTMODEL]
+,[VALUE]
+,[RSTATE]
+,[UPDATED]
+,[UPDATEDBY]
+,[PERSON]
+,[UPDATECOUNT]
+,[GISOBJID]
+,[GISLAYER]
+,[XLOCATION]
+,[YLOCATION]
+,[GEOREF]
+,[FIXED_ASSETID]
+,[SUBCATEGORY]
+,[LOCATION_NAME]
+,[ADA_COMPLIANT]
+,[ASSET_TAG]
+,[ASSET_COORDINATOR]
+,[ASSET_TYPE]
+,[PHYSICAL_LOCATION]
+,[ACCESS_LOCATION]
+,[ADA_ACCESSIBLE]
+,[ADA_CANDIDATE]
+,[HISTORIC]
+,[HISTORIC_PERMIT]
+,[HISTORIC_ARCHEASEMENT]
+,[POTENTIAL_ARCHSITE]
+,[REGION]
+,[YEARBUILT]
+,[LASTSTATUSUPDATE]
+,[XCOORDINATE]
+,[YCOORDINATE]
+,[CREATED]
+,[LATESTINSTALLDATE]
+,[LATESTRECEIPTDATE]
+,[PARKCOUNTED]
+,[PESTICIDEFREE]
+,[2040SERVICEAREA]
+,[ACCOUNTUNITCIP]
+,[ACTIVITYACCOUNTCIP]
+,[ACCOUNTCODEPARTS]
+,[ACCOUNTCODESERVICE]
+,[ECAP_PK]
+,[COUNCILMANICDISTRICT]
+,[LEGISLATIVEDISTRICT]
+,[FIELDDIMENSIONS]
+,[RECTORDIAM]
+,[OVERLAYTYPE]
+,[INPUT_FILE]
+,[LAST_UPDATE_TS]
+'''
+
+print(get_prefixed_field_aliases(sql, 'EAM'))
+# %%
+sql = '''
+[DELETED]
+,[OBJECTID]
+,[PICNIC_NAME]
+,[PICNIC_CODE]
+,[PICNIC_IDENTIFIER]
+,[PICNIC_TYPE]
+,[STATUS]
+,[CATEGORY]
+,[CLASS]
+,[ADDRESS]
+,[LOCATION_NAME]
+,[LOCATION_CODE]
+,[PARK_NAME]
+,[PARK_CODE]
+,[TRAIL_NAME]
+,[GISOBJID]
+,[OWNER]
+,[MANAGER]
+,[PERMITTED]
+,[CAPACITY]
+,[ELECTRICITY]
+,[LIGHTED]
+,[RESIDENT_RATE]
+,[NONRESIDENT_RATE]
+,[BATHROOM]
+,[BATHROOM_KEY]
+,[NUM_TABLES]
+,[NUM_BENCHES]
+,[NUM_GRILLS]
+,[NUM_COALBINS]
+,[SIZE]
+,[MATERIAL]
+,[MGMT_AREA]
+,[MGMT_REGION]
+,[PARENT]
+,[COMMISS]
+,[WITHDRAW]
+,[LATEST_QAQC]
+,[GLOBALID]
+,[CREATIONDATE]
+,[CREATOR]
+,[EDITDATE]
+,[EDITOR]
+,[SUBCATEGORY]
+,[GEOMWKB]
+,[GEOMWKT]
+,[X]
+,[Y]
+,[LONGITUDE]
+,[LATITUDE]
+,[LENGTH]
+,[AREA]
+,[GEOMTYPE]
+,[INGEST_TS]
+,[INGEST_FILE]
+'''
+
+print(get_prefixed_field_aliases(sql, 'GIS'))
+# %%
