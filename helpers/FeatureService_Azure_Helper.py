@@ -17,6 +17,9 @@ gis = GIS(profile="work")
 IGNORED_FIELDS = [
     'X',
     'Y',
+    'LONGITUDE',
+    'LATITUDE',
+    'AREA',
     'ASSET_TYPE'
 ]
 
@@ -42,7 +45,8 @@ def get_featurelayer_field_names(
 
 def get_featurelayer_bronzesqlfields(
     featurelayer_url : str,
-    gis : GIS
+    gis : GIS,
+    name : str
 ) -> str:
     fields = get_featurelayer_fields(featurelayer_url=featurelayer_url, gis=gis)
     type_mappings = {
@@ -59,21 +63,36 @@ def get_featurelayer_bronzesqlfields(
         'esriFieldTypeSingle' : lambda field: "NUMERIC(12, 6)",
         'esriFieldTypeBlob': lambda field: 'BINARY'
     }
-    sql = ''''''
+    sql = f'''USE mds_ldw
+GO
+DROP EXTERNAL TABLE bronze.B_GIS_{name.upper()}
+GO
+CREATE EXTERNAL TABLE bronze.B_GIS_{name.upper()}
+(
+'''
     for field in fields:
         if field['name'] not in IGNORED_FIELDS:
             sql += field['name'] + ' VARCHAR(8000)' + ''',
 '''
-    sql = sql[:-2] + ''',
+    sql = sql[:-2] + f''',
 GEOMWKB VARBINARY(MAX),
 GEOMWKT VARCHAR(MAX),
 X FLOAT,
 Y FLOAT,
 LONGITUDE FLOAT,
 LATITUDE FLOAT,
-LENGTH VARCHAR(8000),
-AREA VARCHAR(8000),
+LENGTH FLOAT,
+AREA FLOAT,
 GEOMTYPE VARCHAR(8000)
+)  
+WITH (
+    LOCATION = '/bronze/gis-bronze/{name}/**',
+    DATA_SOURCE = mds_ldw_source,  
+    FILE_FORMAT = raw_ion_parquet
+)
+GO
+
+-- SELECT TOP 1 * FROM bronze.B_GIS_{name.upper()}
     '''
 
     return sql
@@ -120,10 +139,10 @@ def get_featurelayer_silversqlfields(
     sql = sql[:-2] + ''',
     [GEOMWKB],
     [GEOMWKT],
-    ROUND([X], 4) AS [X],
-    ROUND([Y], 4) AS [Y],
-    ROUND([LONGITUDE], 4) AS [LONGITUDE],
-    ROUND([LATITUDE], 4) AS [LATITUDE],
+    ROUND([X], 8) AS [X],
+    ROUND([Y], 8) AS [Y],
+    ROUND([LONGITUDE], 8) AS [LONGITUDE],
+    ROUND([LATITUDE], 8) AS [LATITUDE],
     ROUND([LENGTH], 4) AS [LENGTH],
     ROUND([AREA], 4) AS AREA,
     CAST([GEOMTYPE] AS VARCHAR(30)) AS [GEOMTYPE]'''
@@ -172,7 +191,7 @@ select
         END
     AS BIT) AS [DELETED],
 {field_selection}
-from (select *, row_number() over(partition by OBJECTID order by UPDATED_DATE desc) as row_num from bronze.B_GIS_{name_upper})t1
+from (select *, row_number() over(partition by OBJECTID order by INGEST_TS desc) as row_num from bronze.B_GIS_{name_upper})t1
 where row_num=1'
 
    PRINT @sql
@@ -216,14 +235,18 @@ layers = [
     # ('AssetsOther', 'https://montgomeryplans.org/server/rest/services/Parks/Assets_Pt/FeatureServer/0'),
     # ('Courts', 'https://montgomeryplans.org/server/rest/services/Courts/Courts/FeatureServer/0'), # 151a6f063c2a468fa927c2150d909da1
     # ('CourtPads', 'https://montgomeryplans.org/server/rest/services/Courts/Courts/FeatureServer/1'), # 151a6f063c2a468fa927c2150d909da1
-    ('PortaJohnLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Portajohn_Locations/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
-    ('PicnicShelters', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/PicnicShelters/FeatureServer/0'), # a067549da0e44ad59fe4e5999cca3304
+    # ('PortaJohnLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Portajohn_Locations/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
+    # ('PicnicShelters', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/PicnicShelters/FeatureServer/0'), # a067549da0e44ad59fe4e5999cca3304
+    ('TreeInventory', 'https://montgomeryplans.org/server/rest/services/Arboriculture/TreeInventory_Pt/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
+    ('TreeSpecies', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Tree_Species_List/FeatureServer/0'), # 2be8dd3aa4df498e8213138fe0c06168
 ]
 
 for layer in layers:
     print(layer[0])
     # print('')
     print(get_featurelayer_field_names(layer[1], gis=gis))
+    print('')
+    print(get_featurelayer_bronzesqlfields(layer[1], gis=gis, name=layer[0]))
     print('')
     print(get_featurelayer_silversqlprocedure(layer[1], gis=gis, name=layer[0]))
     print('')
