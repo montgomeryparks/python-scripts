@@ -75,6 +75,8 @@ CREATE EXTERNAL TABLE bronze.B_GIS_{name.upper()}
             sql += field['name'] + ' VARCHAR(8000)' + ''',
 '''
     sql = sql[:-2] + f''',
+[INGEST_TS] VARCHAR(8000),
+[INGEST_FILE] VARCHAR(8000),
 GEOMWKB VARBINARY(MAX),
 GEOMWKT VARCHAR(MAX),
 X FLOAT,
@@ -119,9 +121,9 @@ def get_featurelayer_silversqlfields(
     fields = get_featurelayer_fields(featurelayer_url=featurelayer_url, gis=gis)
     type_mappings = {
         'esriFieldTypeString': lambda field: f"CAST([{field['name']}] AS VARCHAR({field['length']})) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeSmallInteger': lambda field: f"CAST([{field['name']}] AS INT) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeBigInteger': lambda field: f"CAST([{field['name']}] AS BIGINT) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeInteger': lambda field: f"CAST([{field['name']}] AS INT) AS [{clean_field_name(field['name'])}]",
+        'esriFieldTypeSmallInteger': lambda field: f"CAST(CAST([{field['name']}] AS FLOAT) AS INT) AS [{clean_field_name(field['name'])}]",
+        'esriFieldTypeBigInteger': lambda field: f"CAST(CAST([{field['name']}] AS FLOAT) AS BIGINT) AS [{clean_field_name(field['name'])}]",
+        'esriFieldTypeInteger': lambda field: f"CAST(CAST([{field['name']}] AS FLOAT) AS INT) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeOID': lambda field: f"CAST([{field['name']}] AS INT) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeGlobalID': lambda field: f"CAST([{field['name']}] AS CHAR(36)) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeGUID': lambda field: f"CAST([{field['name']}] AS CHAR(36)) AS [{clean_field_name(field['name'])}]",
@@ -145,7 +147,9 @@ def get_featurelayer_silversqlfields(
     ROUND([LATITUDE], 8) AS [LATITUDE],
     ROUND([LENGTH], 4) AS [LENGTH],
     ROUND([AREA], 4) AS AREA,
-    CAST([GEOMTYPE] AS VARCHAR(30)) AS [GEOMTYPE]'''
+    CAST([GEOMTYPE] AS VARCHAR(30)) AS [GEOMTYPE],
+    [INGEST_TS],
+    [INGEST_FILE]'''
 
     return sql
 
@@ -237,8 +241,9 @@ layers = [
     # ('CourtPads', 'https://montgomeryplans.org/server/rest/services/Courts/Courts/FeatureServer/1'), # 151a6f063c2a468fa927c2150d909da1
     # ('PortaJohnLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Portajohn_Locations/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
     # ('PicnicShelters', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/PicnicShelters/FeatureServer/0'), # a067549da0e44ad59fe4e5999cca3304
-    ('TreeInventory', 'https://montgomeryplans.org/server/rest/services/Arboriculture/TreeInventory_Pt/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
-    ('TreeSpecies', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Tree_Species_List/FeatureServer/0'), # 2be8dd3aa4df498e8213138fe0c06168
+    # ('TreeInventory', 'https://montgomeryplans.org/server/rest/services/Arboriculture/TreeInventory_Pt/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
+    # ('TreeSpecies', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Tree_Species_List/FeatureServer/0'), # 2be8dd3aa4df498e8213138fe0c06168
+    ('AthleticFields', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/AthleticFields/FeatureServer/0'), # 87ccb6bc975e41178ae4f05ff6834324
 ]
 
 for layer in layers:
@@ -358,48 +363,64 @@ print(get_prefixed_field_aliases(sql, 'EAM'))
 sql = '''
 [DELETED]
 ,[OBJECTID]
-,[PICNIC_NAME]
-,[PICNIC_CODE]
-,[PICNIC_IDENTIFIER]
-,[PICNIC_TYPE]
-,[STATUS]
-,[CATEGORY]
-,[CLASS]
-,[ADDRESS]
-,[LOCATION_NAME]
-,[LOCATION_CODE]
-,[PARK_NAME]
-,[PARK_CODE]
-,[TRAIL_NAME]
+,[ASSET]
 ,[GISOBJID]
+,[PARENT]
+,[PARENT_CHILD]
+,[STATUS]
+,[DESCRIPTION]
+,[CATEGORY]
 ,[OWNER]
 ,[MANAGER]
-,[PERMITTED]
-,[CAPACITY]
-,[ELECTRICITY]
-,[LIGHTED]
-,[RESIDENT_RATE]
-,[NONRESIDENT_RATE]
-,[BATHROOM]
-,[BATHROOM_KEY]
-,[NUM_TABLES]
-,[NUM_BENCHES]
-,[NUM_GRILLS]
-,[NUM_COALBINS]
-,[SIZE]
-,[MATERIAL]
+,[PARK_NAME]
+,[PARK_TYPE]
 ,[MGMT_AREA]
 ,[MGMT_REGION]
-,[PARENT]
+,[PERMITTED]
+,[PERMIT_DESCRIPTION]
+,[PERMIT_NUMBER]
+,[LIGHTED]
+,[GOAL_TYPE]
+,[BACKSTOP]
+,[CONTROLLED_ACCESS]
+,[LINED]
+,[IRRIGATION]
+,[FIELD_TYPE]
+,[DIAMOND_SIZE]
+,[RECTANGLE_SIZE]
+,[CIRCLE_SIZE]
+,[RECTANGLE_LENGTH]
+,[RECTANGLE_WIDTH]
+,[DIAMOND_OUTRADIUS]
+,[DIAMOND_INRADIUS]
+,[CIRCLE_DIAMETER]
+,[CIRCLE_PITCHLENGTH]
+,[MATERIAL]
+,[SUBCATEGORY]
+,[LOCATION_NAME]
+,[LOCATION_CODE]
+,[PARK_CODE]
+,[TRAIL_NAME]
+,[GOAL_TYPE2]
+,[SIZE]
+,[RENOVATION_YEAR]
+,[RENOVATION_TYPE]
+,[DUGOUT_SHADE_STRUCTURE]
+,[CONDITION]
+,[PERMIT_HOURS_2023]
+,[TOTAL_PEAK_PERMITTING_HOURS]
+,[FIELD_UTILIZATION]
 ,[COMMISS]
 ,[WITHDRAW]
+,[CLUSTER_ID]
 ,[LATEST_QAQC]
-,[GLOBALID]
+,[PERMITTER]
 ,[CREATIONDATE]
 ,[CREATOR]
 ,[EDITDATE]
 ,[EDITOR]
-,[SUBCATEGORY]
+,[GRASS_TYPE]
+,[MAINTENANCE_STANDARD]
 ,[GEOMWKB]
 ,[GEOMWKT]
 ,[X]
