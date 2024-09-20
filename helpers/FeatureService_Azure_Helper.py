@@ -135,7 +135,7 @@ def get_featurelayer_silversqlfields(
     }
     sql = ''''''
     for field in fields:
-        if field['name'] not in IGNORED_FIELDS:
+        if field['name'] not in IGNORED_FIELDS and field['type'] != 'esriFieldTypeGeometry':
             sql += '    ' + type_mappings[field['type']](field) + ''',
 '''
     sql = sql[:-2] + ''',
@@ -213,6 +213,7 @@ EXECUTE dbo.USP_S_GIS_{name_upper}
     @external_tbl_schema='silver',
     @external_location='silver/gis-{name_lower}',
     @external_tbl_name='S_GIS_{name_upper}';
+SELECT TOP(10) * FROM [silver].[S_GIS_{name_upper}];
 */
 
 """
@@ -243,7 +244,9 @@ layers = [
     # ('PicnicShelters', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/PicnicShelters/FeatureServer/0'), # a067549da0e44ad59fe4e5999cca3304
     # ('TreeInventory', 'https://montgomeryplans.org/server/rest/services/Arboriculture/TreeInventory_Pt/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
     # ('TreeSpecies', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Tree_Species_List/FeatureServer/0'), # 2be8dd3aa4df498e8213138fe0c06168
-    ('AthleticFields', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/AthleticFields/FeatureServer/0'), # 87ccb6bc975e41178ae4f05ff6834324
+    # ('AthleticFields', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/AthleticFields/FeatureServer/0'), # 87ccb6bc975e41178ae4f05ff6834324
+    # ('CensusTracts2020', 'https://tigerweb.geo.census.gov/arcgis/rest/services/Census2020/tigerWMS_Census2020/MapServer/6'),
+    # ('ParkUnits', 'https://montgomeryplans.org/server/rest/services/Parks/ParkUnits_Py/FeatureServer/0'), # 727bab07c5da4c81b88cabdf16a5cf44
 ]
 
 for layer in layers:
@@ -363,64 +366,33 @@ print(get_prefixed_field_aliases(sql, 'EAM'))
 sql = '''
 [DELETED]
 ,[OBJECTID]
-,[ASSET]
-,[GISOBJID]
-,[PARENT]
-,[PARENT_CHILD]
-,[STATUS]
-,[DESCRIPTION]
-,[CATEGORY]
-,[OWNER]
-,[MANAGER]
 ,[PARK_NAME]
-,[PARK_TYPE]
+,[OWNER]
+,[STATUS]
+,[AUTHORITY]
+,[APPROVAL_YEAR]
+,[PLANNING_AREA]
+,[ACQ_BASIS]
+,[NARRATIVE]
+,[URL]
+,[PIC_URL]
+,[GISOBJID]
+,[CREATIONDATE]
+,[EDITDATE]
+,[CREATOR]
+,[EDITOR]
+,[MANAGER]
+,[PARK_CODE]
+,[CATEGORY]
+,[SUBCATEGORY]
+,[ADDRESS]
+,[PARENT]
+,[COMMISS]
+,[LATEST_QAQC]
+,[WITHDRAW]
+,[GLOBALID]
 ,[MGMT_AREA]
 ,[MGMT_REGION]
-,[PERMITTED]
-,[PERMIT_DESCRIPTION]
-,[PERMIT_NUMBER]
-,[LIGHTED]
-,[GOAL_TYPE]
-,[BACKSTOP]
-,[CONTROLLED_ACCESS]
-,[LINED]
-,[IRRIGATION]
-,[FIELD_TYPE]
-,[DIAMOND_SIZE]
-,[RECTANGLE_SIZE]
-,[CIRCLE_SIZE]
-,[RECTANGLE_LENGTH]
-,[RECTANGLE_WIDTH]
-,[DIAMOND_OUTRADIUS]
-,[DIAMOND_INRADIUS]
-,[CIRCLE_DIAMETER]
-,[CIRCLE_PITCHLENGTH]
-,[MATERIAL]
-,[SUBCATEGORY]
-,[LOCATION_NAME]
-,[LOCATION_CODE]
-,[PARK_CODE]
-,[TRAIL_NAME]
-,[GOAL_TYPE2]
-,[SIZE]
-,[RENOVATION_YEAR]
-,[RENOVATION_TYPE]
-,[DUGOUT_SHADE_STRUCTURE]
-,[CONDITION]
-,[PERMIT_HOURS_2023]
-,[TOTAL_PEAK_PERMITTING_HOURS]
-,[FIELD_UTILIZATION]
-,[COMMISS]
-,[WITHDRAW]
-,[CLUSTER_ID]
-,[LATEST_QAQC]
-,[PERMITTER]
-,[CREATIONDATE]
-,[CREATOR]
-,[EDITDATE]
-,[EDITOR]
-,[GRASS_TYPE]
-,[MAINTENANCE_STANDARD]
 ,[GEOMWKB]
 ,[GEOMWKT]
 ,[X]
