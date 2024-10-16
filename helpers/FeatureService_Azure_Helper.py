@@ -230,6 +230,36 @@ def get_prefixed_field_aliases(
         new_sql += new_line + f' AS [{prefix}_{field_name}]\n'
 
     return new_sql
+
+def print_geolookup_fields(
+    fields: list[str]
+) -> str:
+    bronze = ''
+    for field in fields:
+        bronze += f"""
+{field} VARCHAR(8000),
+{field}_DOMINANT VARCHAR(8000),
+{field}_AREAS VARCHAR(8000),"""
+    bronze = bronze[:-1]
+
+    silver = ''
+    for field in fields:
+        silver += f"""
+CAST([{field}] AS VARCHAR(1020)) AS [{field}],
+CAST({field}_DOMINANT AS VARCHAR(255)) AS {field}_DOMINANT,
+CAST({field}_AREAS AS VARCHAR(MAX)) AS {field}_AREAS,"""
+    silver = silver[:-1]
+    print(bronze)
+    print("""
+
+-------------------
+
+""")
+    print(silver)
+
+# In[50]:
+
+print_geolookup_fields(['COUNCIL2021', 'LEGISLATIVE2022', 'CONGRESS2021', 'PARKPOLICEBEAT', 'CENSUSTRACT2020'])
 # In[50]:
 
 layers = [
