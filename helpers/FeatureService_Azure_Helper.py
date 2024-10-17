@@ -277,6 +277,7 @@ layers = [
     # ('AthleticFields', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/AthleticFields/FeatureServer/0'), # 87ccb6bc975e41178ae4f05ff6834324
     # ('CensusTracts2020', 'https://tigerweb.geo.census.gov/arcgis/rest/services/Census2020/tigerWMS_Census2020/MapServer/6'),
     # ('ParkUnits', 'https://montgomeryplans.org/server/rest/services/Parks/ParkUnits_Py/FeatureServer/0'), # 727bab07c5da4c81b88cabdf16a5cf44
+    ('CensusTracts2010', 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Census2010/MapServer/14'),
 ]
 
 for layer in layers:
