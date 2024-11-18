@@ -278,6 +278,7 @@ layers = [
     # ('CensusTracts2020', 'https://tigerweb.geo.census.gov/arcgis/rest/services/Census2020/tigerWMS_Census2020/MapServer/6'),
     # ('ParkUnits', 'https://montgomeryplans.org/server/rest/services/Parks/ParkUnits_Py/FeatureServer/0'), # 727bab07c5da4c81b88cabdf16a5cf44
     # ('CensusTracts2010', 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Census2010/MapServer/14'),
+    # ('Bleachers', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Bleachers/FeatureServer/0'), # fb8f7d0b1a4c4ef79d7b8d0987364844
 ]
 
 for layer in layers:
