@@ -291,7 +291,7 @@ CAST({field}_AREAS AS VARCHAR(MAX)) AS {field}_AREAS,"""
 
 # In[50]:
 
-print_geolookup_fields(['COUNCIL2021', 'LEGISLATIVE2022', 'CONGRESS2021', 'PARKPOLICEBEAT', 'CENSUSTRACT2020'])
+# print_geolookup_fields(['COUNCIL2021', 'LEGISLATIVE2022', 'CONGRESS2021', 'PARKPOLICEBEAT', 'CENSUSTRACT2020'])
 # In[50]:
 
 layers = [
@@ -311,7 +311,8 @@ layers = [
     # ('ParkUnits', 'https://montgomeryplans.org/server/rest/services/Parks/ParkUnits_Py/FeatureServer/0'), # 727bab07c5da4c81b88cabdf16a5cf44
     # ('CensusTracts2010', 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Census2010/MapServer/14'),
     # ('Bleachers', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Bleachers/FeatureServer/0'), # fb8f7d0b1a4c4ef79d7b8d0987364844
-    ('Playgrounds', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Playgrounds_Editable/FeatureServer/0'), # 524972064e324e70a61dfdbfefe875c6
+    # ('Playgrounds', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Playgrounds_Editable/FeatureServer/0'), # 524972064e324e70a61dfdbfefe875c6
+    ('CommunityGardens', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Montgomery_Parks_Community_Gardens/FeatureServer/1'), # ab1834b34cbd47369833c8131aa58d09
 ]
 
 for layer in layers:
