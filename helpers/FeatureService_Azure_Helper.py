@@ -92,6 +92,9 @@ PARKPOLICEBEAT_AREAS VARCHAR(8000),
 CENSUSTRACT2020 VARCHAR(8000),
 CENSUSTRACT2020_DOMINANT VARCHAR(8000),
 CENSUSTRACT2020_AREAS VARCHAR(8000),
+CENSUSTRACT2010 VARCHAR(8000),
+CENSUSTRACT2010_DOMINANT VARCHAR(8000),
+CENSUSTRACT2010_AREAS VARCHAR(8000),
 [INGEST_TS] VARCHAR(8000),
 [INGEST_FILE] VARCHAR(8000),
 GEOMWKB VARBINARY(MAX),
@@ -312,7 +315,8 @@ layers = [
     # ('CensusTracts2010', 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_Census2010/MapServer/14'),
     # ('Bleachers', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Bleachers/FeatureServer/0'), # fb8f7d0b1a4c4ef79d7b8d0987364844
     # ('Playgrounds', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Playgrounds_Editable/FeatureServer/0'), # 524972064e324e70a61dfdbfefe875c6
-    ('CommunityGardens', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Montgomery_Parks_Community_Gardens/FeatureServer/1'), # ab1834b34cbd47369833c8131aa58d09
+    # ('CommunityGardens', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Montgomery_Parks_Community_Gardens/FeatureServer/1'), # ab1834b34cbd47369833c8131aa58d09
+    ('ElectricTelecomPoints', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Utilities/FeatureServer/0'), # e43c4107390e4211a862469ded34bb1e
 ]
 
 for layer in layers:
@@ -431,47 +435,32 @@ print(get_prefixed_field_aliases(sql, 'EAM'))
 # %%
 sql = '''
 ,[OBJECTID]
-,[ASSET]
-,[PARENT]
-,[GISOBJID]
-,[STATUS]
-,[DESCRIPTION]
-,[CLASS]
-,[CATEGORY]
-,[SUBCATEGORY]
-,[OWNER]
-,[MANAGER]
+,[COMM_GARDEN]
+,[GLOBALID]
+,[PLOTS]
 ,[LOCATION_NAME]
 ,[LOCATION_CODE]
 ,[PARK_NAME]
 ,[PARK_CODE]
-,[TRAIL_NAME]
+,[URL]
 ,[MGMT_AREA]
 ,[MGMT_REGION]
-,[SIZE]
+,[DESC_]
+,[DESCRIPTION]
+,[GISOBJID]
+,[ASSET]
+,[TRAIL_NAME]
+,[STATUS]
 ,[MATERIAL]
+,[OWNER]
+,[MANAGER]
+,[PARENT]
+,[SIZE]
 ,[CLUSTER_ID]
-,[CONDITION]
-,[SURFACE_TYPE_1]
-,[SURFACE_TYPE_2]
-,[RECYCLED_RUBBER_SURFACE]
-,[AGE_GROUP_1]
-,[AGE_GROUP_2]
-,[FENCED]
-,[BATHROOM]
-,[WATER_FOUNTAIN]
-,[SEATING]
-,[SHELTER]
-,[LIGHTED]
-,[WIFI]
-,[PARKING]
-,[TRAIL_ACCESS]
-,[MASS_TRANSIT_ACCESS]
-,[NOTES]
-,[LATEST_QAQC]
 ,[COMMISS]
 ,[WITHDRAW]
-,[GLOBALID]
+,[LATEST_QAQC]
+,[SYMBOL]
 ,[CREATIONDATE]
 ,[CREATOR]
 ,[EDITDATE]
