@@ -147,7 +147,7 @@ def get_featurelayer_silversqlfields(
         'esriFieldTypeOID': lambda field: f"CAST([{field['name']}] AS INT) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeGlobalID': lambda field: f"CAST([{field['name']}] AS CHAR(36)) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeGUID': lambda field: f"CAST([{field['name']}] AS CHAR(36)) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeDate': lambda field: f"""DATEADD(S, CAST([{field['name']}] AS FLOAT)/1000, ''1970-01-01'') AT TIME ZONE ''UTC'' AT TIME ZONE ''Eastern Standard Time'' AS [{clean_field_name(field['name'])}]""",
+        'esriFieldTypeDate': lambda field: f"""DATEADD(S, CAST([{field['name']}] AS FLOAT)/1000, '1970-01-01') AT TIME ZONE 'UTC' AT TIME ZONE 'Eastern Standard Time' AS [{clean_field_name(field['name'])}]""",
         'esriFieldTypeDouble' : lambda field: f"CAST([{field['name']}] AS NUMERIC(38, 8)) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeFloat' : lambda field: f"CAST([{field['name']}] AS NUMERIC(12, 6)) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeSingle' : lambda field: f"CAST([{field['name']}] AS NUMERIC(12, 6)) AS [{clean_field_name(field['name'])}]",
@@ -174,6 +174,9 @@ def get_featurelayer_silversqlfields(
     CAST([CENSUSTRACT2020] AS VARCHAR(1020)) AS [CENSUSTRACT2020],
     CAST(CENSUSTRACT2020_DOMINANT AS VARCHAR(255)) AS CENSUSTRACT2020_DOMINANT,
     CAST(CENSUSTRACT2020_AREAS AS VARCHAR(MAX)) AS CENSUSTRACT2020_AREAS,
+    CAST([CENSUSTRACT2010] AS VARCHAR(1020)) AS [CENSUSTRACT2010],
+    CAST([CENSUSTRACT2010_DOMINANT] AS VARCHAR(255)) AS [CENSUSTRACT2010_DOMINANT],
+    CAST([CENSUSTRACT2010_AREAS] AS VARCHAR(MAX)) AS [CENSUSTRACT2010_AREAS],
     [GEOMWKB],
     [GEOMWKT],
     ROUND([X], 8) AS [X],
@@ -213,34 +216,29 @@ BEGIN
     DECLARE @drop_existing_sql NVARCHAR(500)='IF OBJECT_ID('''+@external_tbl_schema +'.'+@external_tbl_name+''') IS NOT NULL DROP EXTERNAL TABLE ['+@external_tbl_schema +'].['+@external_tbl_name+']'
     DECLARE @external_data_source sysname='mds_ldw_source';
     DECLARE @external_file_format sysname='raw_ion_parquet';
-    DECLARE @sql NVARCHAR(MAX)='CREATE EXTERNAL TABLE '+ @external_tbl_schema +'.'+ @external_tbl_name +' 
-    WITH (LOCATION ='''+@external_location + ''', 
-    DATA_SOURCE ='+ @external_data_source + ', 
-    FILE_FORMAT ='+ @external_file_format +') AS 
-select
-    CAST(
-        CASE
-            WHEN [INGEST_TS] < (
-                    SELECT
-                        MAX([INGEST_TS])
-                    FROM
-                        [bronze].[B_GIS_{name_upper}]
-                ) THEN 1
-            ELSE 0
-        END
-    AS BIT) AS [DELETED],
+
+    PRINT @drop_existing_sql
+    EXECUTE sp_executesql @drop_existing_sql
+    PRINT 'DROPPED EXTERNAL TABLE: '+@external_tbl_name
+
+CREATE EXTERNAL TABLE [silver].[S_GIS_PARKUNITS]
+    WITH (
+        LOCATION = 'silver/gis-{name_lower}',
+        DATA_SOURCE = mds_ldw_source,
+        FILE_FORMAT = raw_ion_parquet
+    ) AS
+SELECT
 {field_selection}
-from (select *, row_number() over(partition by OBJECTID order by INGEST_TS desc) as row_num from bronze.B_GIS_{name_upper})t1
-where row_num=1'
-
-   PRINT @sql
-
-   PRINT @drop_existing_sql
-   
-   EXECUTE sp_executesql @drop_existing_sql
-   PRINT 'DROPPED EXTERNAL TABLE: '+@external_tbl_name
-   EXECUTE sp_executesql @sql
-   PRINT 'CREATED EXTERNAL TABLE: '+@external_tbl_name
+FROM (
+    SELECT
+    *
+    ,ROW_NUMBER() OVER (PARTITION BY [OBJECTID] ORDER BY [INGEST_TS] DESC) AS [row_num]
+    ,RANK() OVER (ORDER BY [INGEST_TS] DESC) AS [ingest_num]
+    FROM [bronze].[B_GIS_{name_upper}]
+)t1
+WHERE
+    [row_num] = 1
+    AND [ingest_num] = 1;
 END;
 
 /*
@@ -316,7 +314,9 @@ layers = [
     # ('Bleachers', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Bleachers/FeatureServer/0'), # fb8f7d0b1a4c4ef79d7b8d0987364844
     # ('Playgrounds', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Playgrounds_Editable/FeatureServer/0'), # 524972064e324e70a61dfdbfefe875c6
     # ('CommunityGardens', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Montgomery_Parks_Community_Gardens/FeatureServer/1'), # ab1834b34cbd47369833c8131aa58d09
-    ('ElectricTelecomPoints', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Utilities/FeatureServer/0'), # e43c4107390e4211a862469ded34bb1e
+    # ('ElectricTelecomPoints', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Utilities/FeatureServer/0'), # e43c4107390e4211a862469ded34bb1e
+    ('DogParks', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Dog_Parks/FeatureServer/0'), # 0044b8efb8184c1caaeb41820eb5261f
+    # ('BikeSkateParks', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Skate_Parks/FeatureServer/0'), # 9b81d15eccd541ba96073ba3de6175df
 ]
 
 for layer in layers:
@@ -435,60 +435,37 @@ print(get_prefixed_field_aliases(sql, 'EAM'))
 # %%
 sql = '''
 ,[OBJECTID]
-,[COMM_GARDEN]
-,[GLOBALID]
-,[PLOTS]
-,[LOCATION_NAME]
-,[LOCATION_CODE]
+,[UTILITY]
 ,[PARK_NAME]
-,[PARK_CODE]
-,[URL]
-,[MGMT_AREA]
-,[MGMT_REGION]
-,[DESC_]
-,[DESCRIPTION]
-,[GISOBJID]
-,[ASSET]
-,[TRAIL_NAME]
-,[STATUS]
-,[MATERIAL]
-,[OWNER]
-,[MANAGER]
-,[PARENT]
-,[SIZE]
-,[CLUSTER_ID]
-,[COMMISS]
-,[WITHDRAW]
-,[LATEST_QAQC]
-,[SYMBOL]
-,[CREATIONDATE]
 ,[CREATOR]
-,[EDITDATE]
-,[EDITOR]
-,[COUNCIL2021]
-,[COUNCIL2021_DOMINANT]
-,[COUNCIL2021_AREAS]
-,[LEGISLATIVE2022]
-,[LEGISLATIVE2022_DOMINANT]
-,[LEGISLATIVE2022_AREAS]
-,[CONGRESS2021]
-,[CONGRESS2021_DOMINANT]
-,[CONGRESS2021_AREAS]
-,[PARKPOLICEBEAT]
-,[PARKPOLICEBEAT_DOMINANT]
-,[PARKPOLICEBEAT_AREAS]
-,[CENSUSTRACT2020]
-,[CENSUSTRACT2020_DOMINANT]
-,[CENSUSTRACT2020_AREAS]
+,[OWNER_VENDOR]
+,[YEAR]
+,[ELECTRIC_OR_TELECOM]
+,[UTILITY_CALLBOX]
+,[UTILITY_ELECTRIC]
+,[UTILITY_LIGHT]
+,[UTILITY_SECURITY]
+,[UTILITY_SOLAR]
+,[UTILITY_TELECOM]
+,[UTILITY_TRANSFORMER]
+,[UTILITY_WIFI]
+,[UTILITY_ALARM]
+,[UTILITY_CHARGINGSTATION]
+,[UTILITY_CONTROLLER]
+,[UTILITY_ELECTRICOUTLET]
+,[UTILITY_OTHER]
+,[MOUNTING_TYPE]
+,[CHARGE_TYPE]
+,[FUEL_TYPE]
+,[ALARM_TYPE]
+,[LIGHT_TYPE]
+,[LIGHT_COUNT]
+,[CONTROLLER_TYPE]
+,[SERIAL_NUM]
+,[ACCT_NUM]
+,[NOTES]
 ,[GEOMWKB]
 ,[GEOMWKT]
-,[X]
-,[Y]
-,[LONGITUDE]
-,[LATITUDE]
-,[LENGTH]
-,[AREA]
-,[GEOMTYPE]
 ,[INGEST_TS]
 ,[INGEST_FILE]
 '''
