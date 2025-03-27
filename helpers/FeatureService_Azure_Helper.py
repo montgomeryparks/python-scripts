@@ -315,8 +315,8 @@ layers = [
     # ('Playgrounds', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Playgrounds_Editable/FeatureServer/0'), # 524972064e324e70a61dfdbfefe875c6
     # ('CommunityGardens', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Montgomery_Parks_Community_Gardens/FeatureServer/1'), # ab1834b34cbd47369833c8131aa58d09
     # ('ElectricTelecomPoints', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Utilities/FeatureServer/0'), # e43c4107390e4211a862469ded34bb1e
-    ('DogParks', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Dog_Parks/FeatureServer/0'), # 0044b8efb8184c1caaeb41820eb5261f
-    # ('BikeSkateParks', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Skate_Parks/FeatureServer/0'), # 9b81d15eccd541ba96073ba3de6175df
+    # ('DogParks', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Dog_Parks/FeatureServer/0'), # 0044b8efb8184c1caaeb41820eb5261f
+    ('BikeSkateParks', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Skate_Parks/FeatureServer/0'), # 9b81d15eccd541ba96073ba3de6175df
 ]
 
 for layer in layers:
