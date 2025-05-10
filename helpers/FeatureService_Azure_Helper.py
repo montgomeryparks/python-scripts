@@ -80,8 +80,8 @@ CREATE EXTERNAL TABLE bronze.B_GIS_{name.upper()}
     sql = start_sql + '    ' + sql[5:-1] + f'''
     ,[INGEST_FILE] VARCHAR(8000)
     ,[INGEST_TS] VARCHAR(8000)
-    ,[GEOMWKB] VARBINARY(8000)
-    ,[GEOMWKT] VARCHAR(8000)
+    ,[GEOMWKB] VARBINARY(MAX)
+    ,[GEOMWKT] VARCHAR(MAX)
     ,[X] FLOAT
     ,[Y] FLOAT
     ,[LONGITUDE] FLOAT
@@ -101,6 +101,9 @@ CREATE EXTERNAL TABLE bronze.B_GIS_{name.upper()}
     ,[PARKPOLICEBEAT] VARCHAR(8000)
     ,[PARKPOLICEBEAT_DOMINANT] VARCHAR(8000)
     ,[PARKPOLICEBEAT_AREAS] VARCHAR(8000)
+    ,[REGIONALSERVICECENTER] VARCHAR(8000)
+    ,[REGIONALSERVICECENTER_DOMINANT] VARCHAR(8000)
+    ,[REGIONALSERVICECENTER_AREAS] VARCHAR(8000)
     ,[CENSUSTRACT2020] VARCHAR(8000)
     ,[CENSUSTRACT2020_DOMINANT] VARCHAR(8000)
     ,[CENSUSTRACT2020_AREAS] VARCHAR(8000)
@@ -147,7 +150,7 @@ def get_featurelayer_silversqlfields(
 ) -> str:
     fields = get_featurelayer_fields(featurelayer_url=featurelayer_url, gis=gis)
     type_mappings = {
-        'esriFieldTypeString': lambda field: f"CAST([{field['name']}] AS VARCHAR({field['length']})) AS [{clean_field_name(field['name'])}]",
+        'esriFieldTypeString': lambda field: f"CAST([{field['name']}] AS VARCHAR({field['length'] if field['length'] < 8000 else 'MAX'})) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeSmallInteger': lambda field: f"CAST(CAST([{field['name']}] AS FLOAT) AS INT) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeBigInteger': lambda field: f"CAST(CAST([{field['name']}] AS FLOAT) AS BIGINT) AS [{clean_field_name(field['name'])}]",
         'esriFieldTypeInteger': lambda field: f"CAST(CAST([{field['name']}] AS FLOAT) AS INT) AS [{clean_field_name(field['name'])}]",
@@ -189,6 +192,9 @@ def get_featurelayer_silversqlfields(
     ,CAST([PARKPOLICEBEAT] AS VARCHAR(1020)) AS [PARKPOLICEBEAT]
     ,CAST([PARKPOLICEBEAT_DOMINANT] AS VARCHAR(255)) AS [PARKPOLICEBEAT_DOMINANT]
     ,CAST([PARKPOLICEBEAT_AREAS] AS VARCHAR(MAX)) AS [PARKPOLICEBEAT_AREAS]
+    ,CAST([REGIONALSERVICECENTER] AS VARCHAR(1020)) AS [REGIONALSERVICECENTER]
+    ,CAST([REGIONALSERVICECENTER_DOMINANT] AS VARCHAR(255)) AS [REGIONALSERVICECENTER_DOMINANT]
+    ,CAST([REGIONALSERVICECENTER_AREAS] AS VARCHAR(MAX)) AS [REGIONALSERVICECENTER_AREAS]
     ,CAST([CENSUSTRACT2020] AS VARCHAR(1020)) AS [CENSUSTRACT2020]
     ,CAST([CENSUSTRACT2020_DOMINANT] AS VARCHAR(255)) AS [CENSUSTRACT2020_DOMINANT]
     ,CAST([CENSUSTRACT2020_AREAS] AS VARCHAR(MAX)) AS [CENSUSTRACT2020_AREAS]
@@ -305,7 +311,7 @@ CAST({field}_AREAS AS VARCHAR(MAX)) AS {field}_AREAS,"""
 
 # In[50]:
 
-# print_geolookup_fields(['COUNCIL2021', 'LEGISLATIVE2022', 'CONGRESS2021', 'PARKPOLICEBEAT', 'CENSUSTRACT2020'])
+# print_geolookup_fields(['COUNCIL2021', 'LEGISLATIVE2022', 'CONGRESS2021', 'PARKPOLICEBEAT', 'REGIONALSERVICECENTER', 'CENSUSTRACT2020', 'CENSUSTRACT2010'])
 # In[50]:
 
 layers = [
@@ -314,9 +320,9 @@ layers = [
     # ('Kiosks', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Kiosks_and_Signs/FeatureServer/1'), # d4a8d962a98a4944bfd665fe8bea2fcb
     # ('SignLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Kiosks_and_Signs/FeatureServer/0'), # d4a8d962a98a4944bfd665fe8bea2fcb
     # ('AssetsOther', 'https://montgomeryplans.org/server/rest/services/Parks/Assets_Pt/FeatureServer/0'),
-    ('Courts', 'https://montgomeryplans.org/server/rest/services/Courts/Courts/FeatureServer/0'), # 151a6f063c2a468fa927c2150d909da1
+    # ('Courts', 'https://montgomeryplans.org/server/rest/services/Courts/Courts/FeatureServer/0'), # 151a6f063c2a468fa927c2150d909da1
     # ('CourtPads', 'https://montgomeryplans.org/server/rest/services/Courts/Courts/FeatureServer/1'), # 151a6f063c2a468fa927c2150d909da1
-    # ('PortaJohnLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Portajohn_Locations/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
+    # ('PortaJohnLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Portajohn_Locations/FeatureServer/1'), # e2d98f9697a84f94b41f3455b9db38a5
     # ('PicnicShelters', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/PicnicShelters/FeatureServer/0'), # a067549da0e44ad59fe4e5999cca3304
     # ('TreeInventory', 'https://montgomeryplans.org/server/rest/services/Arboriculture/TreeInventory_Pt/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
     # ('TreeSpecies', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Tree_Species_List/FeatureServer/0'), # 2be8dd3aa4df498e8213138fe0c06168
@@ -330,6 +336,12 @@ layers = [
     # ('ElectricTelecomPoints', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Utilities/FeatureServer/0'), # e43c4107390e4211a862469ded34bb1e
     # ('DogParks', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Dog_Parks/FeatureServer/0'), # 0044b8efb8184c1caaeb41820eb5261f
     # ('BikeSkateParks', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Skate_Parks/FeatureServer/0'), # 9b81d15eccd541ba96073ba3de6175df
+    # ('BCISurveySites', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/ArcGIS/rest/services/BCI_SurveyPoints/FeatureServer/0'), # 40f32a2db2c44223a13c4126f5441c1f
+    # ('BCISurveyResults', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/ArcGIS/rest/services/BCI_SurveyPoints/FeatureServer/2'), # 40f32a2db2c44223a13c4126f5441c1f
+    # ('BCISoundMonitorResults', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/ArcGIS/rest/services/BCI_SurveyPoints/FeatureServer/4'), # 40f32a2db2c44223a13c4126f5441c1f
+    # ('BCISpecies', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/ArcGIS/rest/services/BCI_SurveyPoints/FeatureServer/3'), # 40f32a2db2c44223a13c4126f5441c1f
+    # ('WWLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/ac030a/FeatureServer/0'), # 8e0ca62908d94cedb5919f82eadf370c
+    ('TrailUnits', 'https://montgomeryplans.org/server/rest/services/Trails/TrailUnits_Ln_EDIT/FeatureServer/0'), # 538a3b30596a42b58aea4957e58d3af0
 ]
 
 for layer in layers:
