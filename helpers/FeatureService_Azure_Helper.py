@@ -343,6 +343,7 @@ layers = [
     # ('WWLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/ac030a/FeatureServer/0'), # 8e0ca62908d94cedb5919f82eadf370c
     # ('TrailUnits', 'https://montgomeryplans.org/server/rest/services/Trails/TrailUnits_Ln_EDIT/FeatureServer/0'), # 538a3b30596a42b58aea4957e58d3af0
     # ('BridgesBoardwalksCulvertsDocks', 'https://utility.arcgis.com/usrsvcs/servers/b9b1473ecb3e4fe89d4b6fcd7d5a94bd/rest/services/EnvironmentalEngineering/ParkBridges_Pt_EDIT/FeatureServer/0'), # b9b1473ecb3e4fe89d4b6fcd7d5a94bd, url=https://montgomeryplans.org/server/rest/services/EnvironmentalEngineering/ParkBridges_Pt_EDIT/FeatureServer/0
+    # ('TrailCounterSites', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/TrailCounters/FeatureServer/0'), # 0d3b5b42f46c417d87e08e9b0d1de41f
 
 ]
 
