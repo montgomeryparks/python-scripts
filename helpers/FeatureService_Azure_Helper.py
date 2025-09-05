@@ -351,6 +351,7 @@ layers = [
     # ('BioMonFishCounts', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_EDIT/FeatureServer/2'), # e30e7a3a36cc4d47a22dc8daf83f2eeb,
     # ('BioMonGameFish', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_EDIT/FeatureServer/3'), # e30e7a3a36cc4d47a22dc8daf83f2eeb,
     # ('BioMonPersonnel', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_EDIT/FeatureServer/4'), # e30e7a3a36cc4d47a22dc8daf83f2eeb,
+    # ('WaterSewerPoints', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Utilities/FeatureServer/4'), # e43c4107390e4211a862469ded34bb1e
 ]
 
 for layer in layers:
