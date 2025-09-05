@@ -346,7 +346,11 @@ layers = [
     # ('TrailCounterSites', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/TrailCounters/FeatureServer/0'), # 0d3b5b42f46c417d87e08e9b0d1de41f
     # ('Meadows', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Montgomery_Parks_Meadows/FeatureServer/0'), # 3a1e87352337435db98fdb2ebdda640e,
     # ('ReforestationSites', 'https://utility.arcgis.com/usrsvcs/servers/dc1665c1e5b746cd8804899b9cc33bc5/rest/services/NaturalResources/ReforestationSites_Py_EDIT/FeatureServer/0'), # dc1665c1e5b746cd8804899b9cc33bc5 url=https://montgomeryplans.org/server/rest/services/NaturalResources/ReforestationSites_Py_EDIT/FeatureServer/0
-
+    # ('BioMonVisits', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_EDIT/FeatureServer/0'), # e30e7a3a36cc4d47a22dc8daf83f2eeb,
+    # ('BioMonShockers', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_EDIT/FeatureServer/1'), # e30e7a3a36cc4d47a22dc8daf83f2eeb,
+    # ('BioMonFishCounts', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_EDIT/FeatureServer/2'), # e30e7a3a36cc4d47a22dc8daf83f2eeb,
+    # ('BioMonGameFish', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_EDIT/FeatureServer/3'), # e30e7a3a36cc4d47a22dc8daf83f2eeb,
+    # ('BioMonPersonnel', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_EDIT/FeatureServer/4'), # e30e7a3a36cc4d47a22dc8daf83f2eeb,
 ]
 
 for layer in layers:
