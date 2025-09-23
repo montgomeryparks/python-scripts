@@ -82,7 +82,7 @@ CREATE EXTERNAL TABLE bronze.B_GIS_{name.upper()}
     ,[INGEST_TS] VARCHAR(8000)'''
     
     if any(f['type'] == 'esriFieldTypeGeometry' for f in fields):
-        sql = sql + '''
+        sql = sql + f'''
     ,[GEOMWKB] VARBINARY(MAX)
     ,[GEOMWKT] VARCHAR(MAX)
     ,[X] FLOAT
@@ -119,7 +119,8 @@ CREATE EXTERNAL TABLE bronze.B_GIS_{name.upper()}
     ,[GEOM_PARK_CODE_NEAREST] VARCHAR(8000)
     ,[GEOM_PARK_CODE_NEARESTDISTANCE] FLOAT
     ,[GEOM_PARK_CODE_NEARESTAREAS] VARCHAR(8000)'''
-    sql = sql + '''
+
+    sql = sql + f'''
 )  
 WITH (
     LOCATION = '/bronze/gis-bronze/{name}/**',
@@ -362,7 +363,8 @@ layers = [
     # ('SportAmenities', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Sport_Amenities_Editable/FeatureServer/0'), # 93d81985eb314ff5bb8cf63d25a88b91
     # ('EphemeralWetlands', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/service_d5317a9e7b454349a9c5732995e39e47/FeatureServer/0'), # 3c81fe788d7f4d598cc7e0e23a37c334
     # ('EphemeralWetlandsIncidental', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/service_d5317a9e7b454349a9c5732995e39e47/FeatureServer/1'), # 3c81fe788d7f4d598cc7e0e23a37c334
-    ('EphemeralWetlandsHerpSearch', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/service_d5317a9e7b454349a9c5732995e39e47/FeatureServer/2'), # 3c81fe788d7f4d598cc7e0e23a37c334
+    # ('EphemeralWetlandsHerpSearch', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/service_d5317a9e7b454349a9c5732995e39e47/FeatureServer/2'), # 3c81fe788d7f4d598cc7e0e23a37c334
+    # ('FrogWatchLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/FrogWatch_Locations/FeatureServer/0'), # baacf525e30745c483d11ca022d98d8f
 ]
 # In[ ]:
 for layer in layers:
