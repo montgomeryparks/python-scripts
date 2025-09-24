@@ -365,6 +365,7 @@ layers = [
     # ('EphemeralWetlandsIncidental', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/service_d5317a9e7b454349a9c5732995e39e47/FeatureServer/1'), # 3c81fe788d7f4d598cc7e0e23a37c334
     # ('EphemeralWetlandsHerpSearch', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/service_d5317a9e7b454349a9c5732995e39e47/FeatureServer/2'), # 3c81fe788d7f4d598cc7e0e23a37c334
     # ('FrogWatchLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/FrogWatch_Locations/FeatureServer/0'), # baacf525e30745c483d11ca022d98d8f
+    # ('BioMonFishTaxa', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_FishTaxa_EDIT/FeatureServer/0'), # 75358d1fad194906bd4514d0be217c1e
 ]
 # In[ ]:
 for layer in layers:
