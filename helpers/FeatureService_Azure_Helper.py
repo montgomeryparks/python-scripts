@@ -34,6 +34,12 @@ def get_featurelayer_fields(
 ) -> list:
     return FeatureLayer(featurelayer_url, gis=gis).properties['fields']
 
+def get_featurelayer_type(
+    featurelayer_url : str,
+    gis : GIS
+) -> list:
+    return FeatureLayer(featurelayer_url, gis=gis).properties['type']
+
 def get_field_names(
     fields : list
 ) -> list:
@@ -81,7 +87,7 @@ CREATE EXTERNAL TABLE bronze.B_GIS_{name.upper()}
     ,[INGEST_FILE] VARCHAR(8000)
     ,[INGEST_TS] VARCHAR(8000)'''
     
-    if any(f['type'] == 'esriFieldTypeGeometry' for f in fields):
+    if get_featurelayer_type(featurelayer_url=featurelayer_url, gis=gis) == 'Feature Layer':
         sql = sql + f'''
     ,[GEOMWKB] VARBINARY(MAX)
     ,[GEOMWKT] VARCHAR(MAX)
@@ -177,7 +183,7 @@ def get_featurelayer_silversqlfields(
     ,[INGEST_TS]
     ,[INGEST_FILE]'''
 
-    if any(f['type'] == 'esriFieldTypeGeometry' for f in fields):
+    if get_featurelayer_type(featurelayer_url=featurelayer_url, gis=gis) == 'Feature Layer':
         sql = sql + '''
     ,[GEOMWKB]
     ,[GEOMWKT]
@@ -366,6 +372,8 @@ layers = [
     # ('EphemeralWetlandsHerpSearch', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/service_d5317a9e7b454349a9c5732995e39e47/FeatureServer/2'), # 3c81fe788d7f4d598cc7e0e23a37c334
     # ('FrogWatchLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/FrogWatch_Locations/FeatureServer/0'), # baacf525e30745c483d11ca022d98d8f
     # ('BioMonFishTaxa', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_FishTaxa_EDIT/FeatureServer/0'), # 75358d1fad194906bd4514d0be217c1e
+    # ('PortableRestrooms', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Portajohn_Locations/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
+    # ('NonPortableRestrooms', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Non_Portable_Restrooms/FeatureServer/0'), # 8bef363753c842d0a367bf485e135e8f
 ]
 # In[ ]:
 for layer in layers:
