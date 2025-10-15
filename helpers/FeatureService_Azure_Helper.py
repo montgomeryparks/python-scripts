@@ -374,6 +374,9 @@ layers = [
     # ('BioMonFishTaxa', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_FishTaxa_EDIT/FeatureServer/0'), # 75358d1fad194906bd4514d0be217c1e
     # ('PortableRestrooms', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Portajohn_Locations/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
     # ('NonPortableRestrooms', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Non_Portable_Restrooms/FeatureServer/0'), # 8bef363753c842d0a367bf485e135e8f
+    # ('ParkEvents', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Events/FeatureServer/0'), #'ba328c5931e84a26b05720d4a0463624'
+    # ('ParkEventsSupportServices', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Events/FeatureServer/1'), #'ba328c5931e84a26b05720d4a0463624'
+    # ('ParkEventsExternalPartners', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Events/FeatureServer/2'), #'ba328c5931e84a26b05720d4a0463624'
 ]
 # In[ ]:
 for layer in layers:
@@ -544,3 +547,4 @@ sql = '''
 
 print(get_prefixed_field_aliases(sql, 'GIS'))
 # %%
+
