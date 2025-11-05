@@ -10,6 +10,7 @@ Purpose: Help draft parameters, T-SQL, etc. for querying data originating from a
 from arcgis.gis import GIS
 from arcgis.features import FeatureLayer
 from functools import reduce
+import re
 gis = GIS(profile="work")
 
 
@@ -50,6 +51,46 @@ def get_featurelayer_field_names(
     gis : GIS
 ) -> str:
     return ', '.join([field['name'] for field in get_featurelayer_fields(featurelayer_url=featurelayer_url, gis=gis) if field['name'] not in IGNORED_FIELDS])
+
+def get_featurelayer_stage_parameters(
+    featurelayer_url : str,
+    gis : GIS,
+    name : str
+) -> str:
+
+    fields = get_featurelayer_field_names(featurelayer_url=featurelayer_url, gis=gis)
+    if get_featurelayer_type(featurelayer_url=featurelayer_url, gis=gis) == 'Feature Layer':
+        AZURE_FUNCTION_TRANSFORM_NAME = 'geojson_locations_transform_parquet'
+        return_geometry = 'true'
+    else:
+        AZURE_FUNCTION_TRANSFORM_NAME = 'geojson_parquet'
+        return_geometry = 'false'
+
+    # gets the base url and path for the feature service. the base url is the .com, .org, etc. domain and the path is everything after it
+    service_base_url, service_path = re.match(r'(https?://[^/]+)(/.*)', featurelayer_url).groups()
+    service_path = service_path[1:]
+
+    # TODO: gets the username of the owner of the feature layer item with the "." characters removed
+    # however, if the owner does not have a developer credential item, then provide a warning
+
+    parameters = f'''
+    ('{name}',
+        "gis-raw/{name}",
+        '{service_base_url}', 
+        '{service_path}',
+        '1=1',
+        '{fields}',
+        '{return_geometry}',
+        '{gis.url.lower()}',
+        'arcgisonline-OWNER-CORRESPONDING-SECRET-NAME',
+        f"func-mds-python-flex-mc-dev",
+        'geojson_infer_schema',
+        '{AZURE_FUNCTION_TRANSFORM_NAME}'),
+'''
+    # prints warning to replace the owner's corresponding secret name bc that logic is not provided (yet)
+    print(f"WARNING: Replace 'arcgisonline-OWNER-CORRESPONDING-SECRET-NAME' with the correct secret name for the owner of the feature layer '{name}'")
+    
+    return parameters
 
 def get_featurelayer_bronzesqlfields(
     featurelayer_url : str,
@@ -374,12 +415,15 @@ layers = [
     # ('BioMonFishTaxa', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_FishTaxa_EDIT/FeatureServer/0'), # 75358d1fad194906bd4514d0be217c1e
     # ('PortableRestrooms', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Portajohn_Locations/FeatureServer/0'), # e2d98f9697a84f94b41f3455b9db38a5
     # ('NonPortableRestrooms', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Non_Portable_Restrooms/FeatureServer/0'), # 8bef363753c842d0a367bf485e135e8f
+    # ('ParkingLots', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/ParkingLots/FeatureServer/0'), # c68614b55f43435088ce094ac7c78b74
 ]
 # In[ ]:
 for layer in layers:
     print(layer[0])
     # print('')
     print(get_featurelayer_field_names(layer[1], gis=gis))
+    print('')
+    print(get_featurelayer_stage_parameters(layer[1], gis=gis, name=layer[0]))
     print('')
     print(get_featurelayer_bronzesqlfields(layer[1], gis=gis, name=layer[0]))
     print('')
