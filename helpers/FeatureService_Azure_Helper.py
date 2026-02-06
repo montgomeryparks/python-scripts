@@ -425,6 +425,7 @@ layers = [
     # ('ParkEvents', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Events/FeatureServer/0'), #'ba328c5931e84a26b05720d4a0463624'
     # ('ParkEventsSupportServices', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Events/FeatureServer/1'), #'ba328c5931e84a26b05720d4a0463624'
     # ('ParkEventsExternalPartners', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Events/FeatureServer/2'), #'ba328c5931e84a26b05720d4a0463624'
+    # ('ParkBuildings', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Buildings/FeatureServer/0'), #'e84ab07ffc3b429fad1cd679edb536a7'
 
 ]
 # In[ ]:
@@ -598,4 +599,5 @@ sql = '''
 
 print(get_prefixed_field_aliases(sql, 'GIS'))
 # %%
+
 
