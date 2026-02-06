@@ -24,6 +24,7 @@ IGNORED_FIELDS = [
     'ASSET_TYPE',
     'Shape__Area',
     'Shape__Length',
+    'FACILITY_C',
 ]
 
 # In[49]:
@@ -599,5 +600,6 @@ sql = '''
 
 print(get_prefixed_field_aliases(sql, 'GIS'))
 # %%
+
 
 
