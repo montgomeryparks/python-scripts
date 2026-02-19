@@ -192,7 +192,11 @@ def clean_field_name(name : str) -> str:
         'CREATED_DATE': 'CreationDate',
         'UPDATED_DATE': 'EditDate',
         'CREATED_USER': 'Creator',
-        'UPDATED_USER': 'Editor'
+        'UPDATED_USER': 'Editor',
+        'LOCATION_NAME2': 'LOCATION_NAME',
+        'LOCATION_CODE2': 'LOCATION_CODE',
+        'PARK_NAME2': 'PARK_NAME',
+        'PARK_CODE2': 'PARK_CODE',
     }
     clean_name = reduce(lambda a, kv: a.replace(*kv), rename_fields.items(), name)
     clean_name = clean_name.upper()
@@ -428,6 +432,7 @@ layers = [
     # ('ParkEventsExternalPartners', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Events/FeatureServer/2'), #'ba328c5931e84a26b05720d4a0463624'
     # ('ParkBuildings', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Buildings/FeatureServer/0'), #'e84ab07ffc3b429fad1cd679edb536a7'
     # ('ParkLocations', 'https://utility.arcgis.com/usrsvcs/servers/b584f5e55fd84553a805ef07187037dd/rest/services/Parks/SubParks_Py_EDIT/FeatureServer/0'), #'c23871e6e0fe43bc8209de00a1948fbd'
+    # ('ParkEventsSecondaryLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Events/FeatureServer/3'), #'ba328c5931e84a26b05720d4a0463624'
 
 ]
 # In[ ]:
