@@ -461,6 +461,7 @@ layers = [
     # ('ParkEventsSecondaryLocations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Park_Events/FeatureServer/3'), #'ba328c5931e84a26b05720d4a0463624'
     # ('RetainingWalls', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Retaining_Walls/FeatureServer/0'), #'4635f79eb5ce4cc89871ddda9a537664'
     # ('SmallDams', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Small_Dams/FeatureServer/0'), #'b0980c8e63b54e67bfef0068aa1e6926'
+    # ('BioMonStations', 'https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Biological_Monitoring/FeatureServer/0'), #'df20297136df4647bf227ba0d22a9242'
 ]
 # In[ ]:
 for layer in layers:
