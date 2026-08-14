@@ -26,6 +26,7 @@ class UpdateGeographicFields(object):
             direction="Input",
             multiValue=True,
         )
+        in_layers.description = "Select one or more feature layers to update with park, location, and management attribute values."
         params.append(in_layers)
 
         # Field update toggles
@@ -47,6 +48,18 @@ class UpdateGeographicFields(object):
                 direction="Input",
             )
             param.value = True  # Checked by default
+            if name == "update_park_code":
+                param.description = "Populate the PARK_CODE field using the matching park feature for each record."
+            elif name == "update_park_name":
+                param.description = "Populate the PARK_NAME field using the matching park feature for each record."
+            elif name == "update_loc_code":
+                param.description = "Populate the LOCATION_CODE field using the matching park location for each record."
+            elif name == "update_loc_name":
+                param.description = "Populate the LOCATION_NAME field using the matching park location for each record."
+            elif name == "update_mgmt_area":
+                param.description = "Populate the MGMT_AREA field using the matching management boundary for each record."
+            elif name == "update_mgmt_region":
+                param.description = "Populate the MGMT_REGION field using the matching management boundary for each record."
             params.append(param)
 
         param_def_query = arcpy.Parameter(
@@ -56,6 +69,7 @@ class UpdateGeographicFields(object):
             parameterType="Optional",
             direction="Input",
         )
+        param_def_query.description = "Optionally limit the update to only the features that match this SQL definition query."
         params.append(param_def_query)
 
         return params
