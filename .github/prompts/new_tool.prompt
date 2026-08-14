@@ -1,0 +1,10 @@
+Create a new ArcGIS Pro tool script within the `src/toolboxes/` directory.
+
+Use the file at `.github/templates/tool_template.py` as the strict baseline for the class structure.
+
+Enforce the following project standards:
+* Format parameter lists and dictionary definitions using leading commas.
+* Treat API bearer parameters strictly as static client keys.
+* When mapping assets in the UI, do not filter out unlinked items; highlight them with a visual glow.
+* If drafting DuckDB spatial queries, strictly utilize INNER JOIN for nearest-match logic.
+* Ensure target time-series columns are named exactly 'Timeline'.
