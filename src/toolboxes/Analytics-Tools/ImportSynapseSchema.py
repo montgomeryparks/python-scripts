@@ -20,6 +20,7 @@ class ImportSynapseSchema(object):
             direction="Input",
         )
         param_csv.filter.list = ["csv"]
+        param_csv.description = "Select the Synapse metadata CSV that defines the field schema for the output feature class."
 
         # Parameter 1: Target Geodatabase
         param_gdb = arcpy.Parameter(
@@ -29,6 +30,7 @@ class ImportSynapseSchema(object):
             parameterType="Required",
             direction="Input",
         )
+        param_gdb.description = "Choose the geodatabase or workspace where the new feature class will be created."
 
         # Parameter 2: Output Feature Class Name
         param_name = arcpy.Parameter(
@@ -38,6 +40,7 @@ class ImportSynapseSchema(object):
             parameterType="Required",
             direction="Input",
         )
+        param_name.description = "Enter the name to assign to the output feature class."
 
         # Parameter 3: Execution Action (Overwrite or Add)
         param_action = arcpy.Parameter(
@@ -49,6 +52,7 @@ class ImportSynapseSchema(object):
         )
         param_action.filter.list = ["Overwrite", "Add Fields"]
         param_action.value = "Overwrite"
+        param_action.description = "Choose whether to replace the existing feature class or append fields to it."
 
         # Parameter 4: Geometry Type
         param_geom = arcpy.Parameter(
@@ -60,6 +64,7 @@ class ImportSynapseSchema(object):
         )
         param_geom.filter.list = ["POINT", "MULTIPOINT", "POLYLINE", "POLYGON", "Null"]
         param_geom.value = "POINT"
+        param_geom.description = "Select the geometry type that matches the feature class being created."
 
         # Parameter 5: Spatial Reference
         param_sr = arcpy.Parameter(
@@ -71,6 +76,7 @@ class ImportSynapseSchema(object):
         )
         # Defaulting to WKID 2248
         param_sr.value = arcpy.SpatialReference(2248)
+        param_sr.description = "Set the coordinate system to use for the feature class geometry."
 
         # Parameter 6: Fields to Exclude (Exact Name)
         param_ex_names = arcpy.Parameter(
@@ -82,6 +88,7 @@ class ImportSynapseSchema(object):
             multiValue=True,
         )
         param_ex_names.value = ["OBJECTID", "Shape", "GlobalID", "GEOMWKB", "GEOMWKT"]
+        param_ex_names.description = "Optional exact field names to skip when creating the output schema."
 
         # Parameter 7: Field Prefixes to Exclude
         param_ex_prefixes = arcpy.Parameter(
@@ -93,6 +100,7 @@ class ImportSynapseSchema(object):
             multiValue=True,
         )
         param_ex_prefixes.value = ["GEOM_", "INGEST_"]
+        param_ex_prefixes.description = "Optional field-name prefixes to ignore when building the schema."
 
         # Parameter 8: Field Suffixes to Exclude
         param_ex_suffixes = arcpy.Parameter(
@@ -104,6 +112,7 @@ class ImportSynapseSchema(object):
             multiValue=True,
         )
         param_ex_suffixes.value = ["_AREAS"]
+        param_ex_suffixes.description = "Optional field-name suffixes to exclude from the generated output fields."
 
         return [
             param_csv,
