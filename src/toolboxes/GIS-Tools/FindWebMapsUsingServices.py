@@ -22,6 +22,10 @@ class FindWebMapsUsingServices(object):
             direction="Input",
             multiValue=True,
         )
+        param_services.description = (
+            "Select one or more Feature Services, Map Services, or layer references to search for across the active portal's Web Maps. "
+            "You can provide service URLs directly or choose layers from the current project."
+        )
 
         param_output = arcpy.Parameter(
             displayName="Output Excel File",
@@ -30,6 +34,7 @@ class FindWebMapsUsingServices(object):
             parameterType="Required",
             direction="Output",
         )
+        param_output.description = "Choose the destination .xlsx file that will contain the list of matching Web Maps and their metadata."
         if param_output.filter:
             param_output.filter.list = ["xlsx"]
 
