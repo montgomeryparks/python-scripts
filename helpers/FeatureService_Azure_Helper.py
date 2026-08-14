@@ -1,80 +1,85 @@
-'''
+"""
 Author: Carter Hughes
 Date: 20260306
 Purpose: Help draft parameters, T-SQL, etc. for querying data originating from a Feature or Map Service in Azure
-'''
+"""
 
 # In[1]:
 
-
-from arcgis.gis import GIS
-from arcgis.features import FeatureLayer
-from functools import reduce
 import re
+from functools import reduce
+
+from arcgis.features import FeatureLayer
+from arcgis.gis import GIS
+
 gis = GIS(profile="work")
 
 
 # In[48]:
 IGNORED_FIELDS = [
-    'X',
-    'Y',
-    'LONGITUDE',
-    'LATITUDE',
-    'AREA',
-    'ASSET_TYPE',
-    'Shape__Area',
-    'Shape__Length',
-    'FACILITY_C',
+    "X",
+    "Y",
+    "LONGITUDE",
+    "LATITUDE",
+    "AREA",
+    "ASSET_TYPE",
+    "Shape__Area",
+    "Shape__Length",
+    "FACILITY_C",
 ]
 
 # In[49]:
 
 
-def get_featurelayer_fields(
-    featurelayer_url : str,
-    gis : GIS
-) -> list:
-    return FeatureLayer(featurelayer_url, gis=gis).properties['fields']
+def get_featurelayer_fields(featurelayer_url: str, gis: GIS) -> list:
+    return FeatureLayer(featurelayer_url, gis=gis).properties["fields"]
 
-def get_featurelayer_type(
-    featurelayer_url : str,
-    gis : GIS
-) -> list:
-    return FeatureLayer(featurelayer_url, gis=gis).properties['type']
 
-def get_field_names(
-    fields : list
-) -> list:
-    return [field['name'] for field in fields]
+def get_featurelayer_type(featurelayer_url: str, gis: GIS) -> list:
+    return FeatureLayer(featurelayer_url, gis=gis).properties["type"]
 
-def get_featurelayer_field_names(
-    featurelayer_url : str,
-    gis : GIS
-) -> str:
-    return ', '.join([field['name'] for field in get_featurelayer_fields(featurelayer_url=featurelayer_url, gis=gis) if field['name'] not in IGNORED_FIELDS])
+
+def get_field_names(fields: list) -> list:
+    return [field["name"] for field in fields]
+
+
+def get_featurelayer_field_names(featurelayer_url: str, gis: GIS) -> str:
+    return ", ".join(
+        [
+            field["name"]
+            for field in get_featurelayer_fields(
+                featurelayer_url=featurelayer_url, gis=gis
+            )
+            if field["name"] not in IGNORED_FIELDS
+        ]
+    )
+
 
 def get_featurelayer_stage_parameters(
-    featurelayer_url : str,
-    gis : GIS,
-    name : str
+    featurelayer_url: str, gis: GIS, name: str
 ) -> str:
 
     fields = get_featurelayer_field_names(featurelayer_url=featurelayer_url, gis=gis)
-    if get_featurelayer_type(featurelayer_url=featurelayer_url, gis=gis) == 'Feature Layer':
-        AZURE_FUNCTION_TRANSFORM_NAME = 'geojson_locations_transform_parquet'
-        return_geometry = 'true'
+    if (
+        get_featurelayer_type(featurelayer_url=featurelayer_url, gis=gis)
+        == "Feature Layer"
+    ):
+        AZURE_FUNCTION_TRANSFORM_NAME = "geojson_locations_transform_parquet"
+        return_geometry = "true"
     else:
-        AZURE_FUNCTION_TRANSFORM_NAME = 'geojson_parquet'
-        return_geometry = 'false'
+        AZURE_FUNCTION_TRANSFORM_NAME = "geojson_parquet"
+        return_geometry = "false"
 
     # gets the base url and path for the feature service. the base url is the .com, .org, etc. domain and the path is everything after it
-    service_base_url, service_path = re.match(r'(https?://[^/]+)(/.*)', featurelayer_url).groups()
+    service_base_url, service_path = re.match(
+        r"(https?://[^/]+)(/.*)", featurelayer_url
+    ).groups()
     service_path = service_path[1:]
 
     # TODO: gets the username of the owner of the feature layer item with the "." characters removed
     # however, if the owner does not have a developer credential item, then provide a warning
 
-    parameters = f'''
+    parameters = f"""
     ('{name}',
         "gis-raw/{name}",
         '{service_base_url}', 
@@ -87,50 +92,50 @@ def get_featurelayer_stage_parameters(
         f"func-mds-python-flex-mc-dev",
         'geojson_infer_schema',
         '{AZURE_FUNCTION_TRANSFORM_NAME}'),
-'''
+"""
     # prints warning to replace the owner's corresponding secret name bc that logic is not provided (yet)
-    print(f"WARNING: Replace 'arcgisonline-OWNER-CORRESPONDING-SECRET-NAME' with the correct secret name for the owner of the feature layer '{name}'")
-    
+    print(
+        f"WARNING: Replace 'arcgisonline-OWNER-CORRESPONDING-SECRET-NAME' with the correct secret name for the owner of the feature layer '{name}'"
+    )
+
     return parameters
 
-def get_featurelayer_bronzesqlfields(
-    featurelayer_url : str,
-    gis : GIS,
-    name : str
-) -> str:
+
+def get_featurelayer_bronzesqlfields(featurelayer_url: str, gis: GIS, name: str) -> str:
     fields = get_featurelayer_fields(featurelayer_url=featurelayer_url, gis=gis)
-    type_mappings = {
-        'esriFieldTypeString': lambda field: f"VARCHAR({field['length']})",
-        'esriFieldTypeSmallInteger': lambda field: 'INT',
-        'esriFieldTypeBigInteger': lambda field: 'BIGINT',
-        'esriFieldTypeInteger': lambda field: 'INT',
-        'esriFieldTypeOID': lambda field: 'INT',
-        'esriFieldTypeGlobalID': lambda field: "CHAR(36)",
-        'esriFieldTypeGUID': lambda field: "CHAR(36)",
-        'esriFieldTypeDate': lambda field: 'INT',
-        'esriFieldTypeDouble' : lambda field: "NUMERIC(38, 8)",
-        'esriFieldTypeFloat' : lambda field: "NUMERIC(12, 6)",
-        'esriFieldTypeSingle' : lambda field: "NUMERIC(12, 6)",
-        'esriFieldTypeBlob': lambda field: 'BINARY'
-    }
-    start_sql = f'''USE mds_ldw
+    start_sql = f"""USE mds_ldw
 GO
 DROP EXTERNAL TABLE bronze.B_GIS_{name.upper()}
 GO
 CREATE EXTERNAL TABLE bronze.B_GIS_{name.upper()}
 (
-'''
-    sql = ''
+"""
+    sql = ""
     for field in fields:
-        if field['name'] not in IGNORED_FIELDS:
-            sql += '    ,[' + field['name'] + '] VARCHAR(8000)' + '''
-'''
-    sql = start_sql + '    ' + sql[5:-1] + f'''
+        if field["name"] not in IGNORED_FIELDS:
+            sql += (
+                "    ,["
+                + field["name"]
+                + "] VARCHAR(8000)"
+                + """
+"""
+            )
+    sql = (
+        start_sql
+        + "    "
+        + sql[5:-1]
+        + """
     ,[INGEST_FILE] VARCHAR(8000)
-    ,[INGEST_TS] VARCHAR(8000)'''
-    
-    if get_featurelayer_type(featurelayer_url=featurelayer_url, gis=gis) == 'Feature Layer':
-        sql = sql + f'''
+    ,[INGEST_TS] VARCHAR(8000)"""
+    )
+
+    if (
+        get_featurelayer_type(featurelayer_url=featurelayer_url, gis=gis)
+        == "Feature Layer"
+    ):
+        sql = (
+            sql
+            + """
     ,[GEOMWKB] VARBINARY(MAX)
     ,[GEOMWKT] VARCHAR(MAX)
     ,[X] FLOAT
@@ -181,9 +186,12 @@ CREATE EXTERNAL TABLE bronze.B_GIS_{name.upper()}
     ,[GEOM_BUILDING_CODE_AREAS] VARCHAR(8000)
     ,[GEOM_BUILDING_CODE_NEAREST] VARCHAR(8000)
     ,[GEOM_BUILDING_CODE_NEARESTDISTANCE] FLOAT
-    ,[GEOM_BUILDING_CODE_NEARESTAREAS] VARCHAR(8000)'''
+    ,[GEOM_BUILDING_CODE_NEARESTAREAS] VARCHAR(8000)"""
+        )
 
-    sql = sql + f'''
+    sql = (
+        sql
+        + f"""
 )  
 WITH (
     LOCATION = '/bronze/gis-bronze/{name}/**',
@@ -193,59 +201,97 @@ WITH (
 GO
 
 -- SELECT TOP 1 * FROM bronze.B_GIS_{name.upper()}
-    '''
+    """
+    )
 
     return sql
 
 
-def clean_field_name(name : str) -> str:
+def clean_field_name(name: str) -> str:
     rename_fields = {
-        'SIZE_': 'SIZE',
-        'CREATED_DATE': 'CreationDate',
-        'UPDATED_DATE': 'EditDate',
-        'CREATED_USER': 'Creator',
-        'UPDATED_USER': 'Editor',
-        'LOCATION_NAME2': 'LOCATION_NAME',
-        'LOCATION_CODE2': 'LOCATION_CODE',
-        'PARK_NAME2': 'PARK_NAME',
-        'PARK_CODE2': 'PARK_CODE',
+        "SIZE_": "SIZE",
+        "CREATED_DATE": "CreationDate",
+        "UPDATED_DATE": "EditDate",
+        "CREATED_USER": "Creator",
+        "UPDATED_USER": "Editor",
+        "LOCATION_NAME2": "LOCATION_NAME",
+        "LOCATION_CODE2": "LOCATION_CODE",
+        "PARK_NAME2": "PARK_NAME",
+        "PARK_CODE2": "PARK_CODE",
     }
     clean_name = reduce(lambda a, kv: a.replace(*kv), rename_fields.items(), name)
     clean_name = clean_name.upper()
 
     return clean_name
 
-    
-def get_featurelayer_silversqlfields(
-    featurelayer_url : str,
-    gis : GIS
-) -> str:
+
+def get_featurelayer_silversqlfields(featurelayer_url: str, gis: GIS) -> str:
     fields = get_featurelayer_fields(featurelayer_url=featurelayer_url, gis=gis)
     type_mappings = {
-        'esriFieldTypeString': lambda field: f"CAST([{field['name']}] AS VARCHAR({field['length'] if field['length'] < 8000 else 'MAX'})) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeSmallInteger': lambda field: f"CAST(CAST([{field['name']}] AS FLOAT) AS INT) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeBigInteger': lambda field: f"CAST(CAST([{field['name']}] AS FLOAT) AS BIGINT) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeInteger': lambda field: f"CAST(CAST([{field['name']}] AS FLOAT) AS INT) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeOID': lambda field: f"CAST([{field['name']}] AS INT) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeGlobalID': lambda field: f"CAST([{field['name']}] AS CHAR(36)) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeGUID': lambda field: f"CAST([{field['name']}] AS CHAR(36)) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeDate': lambda field: f"""DATEADD(S, CAST([{field['name']}] AS FLOAT)/1000, '1970-01-01') AT TIME ZONE 'UTC' AT TIME ZONE 'Eastern Standard Time' AS [{clean_field_name(field['name'])}]""",
-        'esriFieldTypeDouble' : lambda field: f"CAST([{field['name']}] AS NUMERIC(38, 8)) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeFloat' : lambda field: f"CAST([{field['name']}] AS NUMERIC(12, 6)) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeSingle' : lambda field: f"CAST([{field['name']}] AS NUMERIC(12, 6)) AS [{clean_field_name(field['name'])}]",
-        'esriFieldTypeBlob': lambda field: f"CAST([{field['name']}] AS BINARY) AS [{clean_field_name(field['name'])}]"
+        "esriFieldTypeString": lambda field: (
+            f"CAST([{field['name']}] AS VARCHAR({field['length'] if field['length'] < 8000 else 'MAX'})) AS [{clean_field_name(field['name'])}]"
+        ),
+        "esriFieldTypeSmallInteger": lambda field: (
+            f"CAST(CAST([{field['name']}] AS FLOAT) AS INT) AS [{clean_field_name(field['name'])}]"
+        ),
+        "esriFieldTypeBigInteger": lambda field: (
+            f"CAST(CAST([{field['name']}] AS FLOAT) AS BIGINT) AS [{clean_field_name(field['name'])}]"
+        ),
+        "esriFieldTypeInteger": lambda field: (
+            f"CAST(CAST([{field['name']}] AS FLOAT) AS INT) AS [{clean_field_name(field['name'])}]"
+        ),
+        "esriFieldTypeOID": lambda field: (
+            f"CAST([{field['name']}] AS INT) AS [{clean_field_name(field['name'])}]"
+        ),
+        "esriFieldTypeGlobalID": lambda field: (
+            f"CAST([{field['name']}] AS CHAR(36)) AS [{clean_field_name(field['name'])}]"
+        ),
+        "esriFieldTypeGUID": lambda field: (
+            f"CAST([{field['name']}] AS CHAR(36)) AS [{clean_field_name(field['name'])}]"
+        ),
+        "esriFieldTypeDate": lambda field: (
+            f"""DATEADD(S, CAST([{field["name"]}] AS FLOAT)/1000, '1970-01-01') AT TIME ZONE 'UTC' AT TIME ZONE 'Eastern Standard Time' AS [{clean_field_name(field["name"])}]"""
+        ),
+        "esriFieldTypeDouble": lambda field: (
+            f"CAST([{field['name']}] AS NUMERIC(38, 8)) AS [{clean_field_name(field['name'])}]"
+        ),
+        "esriFieldTypeFloat": lambda field: (
+            f"CAST([{field['name']}] AS NUMERIC(12, 6)) AS [{clean_field_name(field['name'])}]"
+        ),
+        "esriFieldTypeSingle": lambda field: (
+            f"CAST([{field['name']}] AS NUMERIC(12, 6)) AS [{clean_field_name(field['name'])}]"
+        ),
+        "esriFieldTypeBlob": lambda field: (
+            f"CAST([{field['name']}] AS BINARY) AS [{clean_field_name(field['name'])}]"
+        ),
     }
-    sql = ''''''
+    sql = """"""
     for field in fields:
-        if field['name'] not in IGNORED_FIELDS and field['type'] != 'esriFieldTypeGeometry':
-            sql += '    ,' + type_mappings[field['type']](field) + '''
-'''
-    sql = '    ' + sql[5:-1] + '''
+        if (
+            field["name"] not in IGNORED_FIELDS
+            and field["type"] != "esriFieldTypeGeometry"
+        ):
+            sql += (
+                "    ,"
+                + type_mappings[field["type"]](field)
+                + """
+"""
+            )
+    sql = (
+        "    "
+        + sql[5:-1]
+        + """
     ,[INGEST_TS]
-    ,[INGEST_FILE]'''
+    ,[INGEST_FILE]"""
+    )
 
-    if get_featurelayer_type(featurelayer_url=featurelayer_url, gis=gis) == 'Feature Layer':
-        sql = sql + '''
+    if (
+        get_featurelayer_type(featurelayer_url=featurelayer_url, gis=gis)
+        == "Feature Layer"
+    ):
+        sql = (
+            sql
+            + """
     ,[GEOMWKB]
     ,[GEOMWKT]
     ,ROUND([X], 8) AS [X]
@@ -296,19 +342,21 @@ def get_featurelayer_silversqlfields(
     ,CAST([GEOM_BUILDING_CODE_AREAS] AS VARCHAR(MAX)) AS [GEOM_BUILDING_CODE_AREAS]
     ,CAST([GEOM_BUILDING_CODE_NEAREST] AS VARCHAR(30)) AS [GEOM_BUILDING_CODE_NEAREST]
     ,ROUND([GEOM_BUILDING_CODE_NEARESTDISTANCE], 4) AS [GEOM_BUILDING_CODE_NEARESTDISTANCE]
-    ,CAST([GEOM_BUILDING_CODE_NEARESTAREAS] AS VARCHAR(MAX)) AS [GEOM_BUILDING_CODE_NEARESTAREAS]'''
+    ,CAST([GEOM_BUILDING_CODE_NEARESTAREAS] AS VARCHAR(MAX)) AS [GEOM_BUILDING_CODE_NEARESTAREAS]"""
+        )
 
     return sql
 
+
 def get_featurelayer_silversqlprocedure(
-    featurelayer_url : str,
-    gis : GIS,
-    name : str
+    featurelayer_url: str, gis: GIS, name: str
 ) -> str:
     name_lower = name.lower()
     name_upper = name.upper()
 
-    field_selection = get_featurelayer_silversqlfields(featurelayer_url=featurelayer_url, gis=gis)
+    field_selection = get_featurelayer_silversqlfields(
+        featurelayer_url=featurelayer_url, gis=gis
+    )
     procedure = f"""
 USE mds_ldw;
 GO
@@ -361,22 +409,19 @@ SELECT TOP(10) * FROM [silver].[S_GIS_{name_upper}];
 """
     return procedure
 
-def get_prefixed_field_aliases(
-    sql : str,
-    prefix : str
-) -> str:
-    new_sql = ''
-    for line in sql.split('\n')[1:-1]:
-        new_line = line.replace('[', f'[{prefix.lower()}].[')
-        field_name = line.split('[')[1].split(']')[0]
-        new_sql += new_line + f' AS [{prefix}_{field_name}]\n'
+
+def get_prefixed_field_aliases(sql: str, prefix: str) -> str:
+    new_sql = ""
+    for line in sql.split("\n")[1:-1]:
+        new_line = line.replace("[", f"[{prefix.lower()}].[")
+        field_name = line.split("[")[1].split("]")[0]
+        new_sql += new_line + f" AS [{prefix}_{field_name}]\n"
 
     return new_sql
 
-def print_geolookup_fields(
-    fields: list[str]
-) -> str:
-    bronze = ''
+
+def print_geolookup_fields(fields: list[str]) -> str:
+    bronze = ""
     for field in fields:
         bronze += f"""
 {field} VARCHAR(8000),
@@ -384,7 +429,7 @@ def print_geolookup_fields(
 {field}_AREAS VARCHAR(8000),"""
     bronze = bronze[:-1]
 
-    silver = ''
+    silver = ""
     for field in fields:
         silver += f"""
 CAST([{field}] AS VARCHAR(1020)) AS [{field}],
@@ -398,6 +443,7 @@ CAST({field}_AREAS AS VARCHAR(MAX)) AS {field}_AREAS,"""
 
 """)
     print(silver)
+
 
 # In[50]:
 
@@ -466,13 +512,13 @@ for layer in layers:
     print(layer[0])
     # print('')
     print(get_featurelayer_field_names(layer[1], gis=gis))
-    print('')
+    print("")
     print(get_featurelayer_stage_parameters(layer[1], gis=gis, name=layer[0]))
-    print('')
+    print("")
     print(get_featurelayer_bronzesqlfields(layer[1], gis=gis, name=layer[0]))
-    print('')
+    print("")
     print(get_featurelayer_silversqlprocedure(layer[1], gis=gis, name=layer[0]))
-    print('')
+    print("")
 
 # In[ ]:
 # sql = ''''''
@@ -493,7 +539,7 @@ for layer in layers:
 # """
 
 # In[ ]:
-sql = '''
+sql = """
 [LASTSAVED]
 ,[OBTYPE]
 ,[OBTYPEDESC]
@@ -574,11 +620,11 @@ sql = '''
 ,[OVERLAYTYPE]
 ,[INPUT_FILE]
 ,[LAST_UPDATE_TS]
-'''
+"""
 
 # print(get_prefixed_field_aliases(sql, 'EAM'))
 # %%
-sql = '''
+sql = """
 ,[OBJECTID]
 ,[DESCRIPTION]
 ,[STATUS]
@@ -628,11 +674,7 @@ sql = '''
 ,[LENGTH]
 ,[AREA]
 ,[GEOMTYPE]
-'''
+"""
 
-print(get_prefixed_field_aliases(sql, 'GIS'))
+print(get_prefixed_field_aliases(sql, "GIS"))
 # %%
-
-
-
-
