@@ -1,0 +1,7 @@
+{
+  "python.defaultInterpreterPath": "C:\\Users\\carter.hughes\\AppData\\Local\\ESRI\\conda\\envs\\da_env",
+
+  // Forces Ruff to strictly use the active VS Code Python interpreter environment
+  "ruff.importStrategy": "fromEnvironment",
+  "python-envs.defaultEnvManager": "ms-python.python:system"
+}
