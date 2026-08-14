@@ -1,0 +1,90 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "1. Setup: Clone ArcGIS Pro Env",
+      "type": "shell",
+      "command": "\"C:\\Program Files\\ArcGIS\\Pro\\bin\\Python\\Scripts\\conda.exe\"",
+      "args": [
+        "create",
+        "--clone",
+        "arcgispro-py3",
+        "--name",
+        "da_env",
+        "--pinned",
+        "-y"
+      ],
+      "options": {
+        "shell": {
+          "executable": "cmd.exe",
+          "args": ["/d", "/c"]
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "2. Sync: Install Requirements",
+      "type": "shell",
+      "command": "\"${command:python.interpreterPath}\"",
+      "args": ["-m", "pip", "install", "-r", "requirements.txt"],
+      "options": {
+        "shell": {
+          "executable": "cmd.exe",
+          "args": ["/d", "/c"]
+        }
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "3. Build: Compile PYT",
+      "type": "shell",
+      "command": "\"${command:python.interpreterPath}\"",
+      "args": ["build_toolboxes.py"],
+      "options": {
+        "shell": {
+          "executable": "cmd.exe",
+          "args": ["/d", "/c"]
+        }
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      }
+    },
+    {
+      "label": "4. Test: Run PyTest",
+      "type": "shell",
+      "command": "\"${command:python.interpreterPath}\"",
+      "args": ["-m", "pytest", "tests/"],
+      "options": {
+        "shell": {
+          "executable": "cmd.exe",
+          "args": ["/d", "/c"]
+        }
+      },
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    }
+  ]
+}
