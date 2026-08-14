@@ -16,6 +16,7 @@ class BatchCalculateField(object):
             direction="Input",
             multiValue=True,
         )
+        param_layers.description = "Select one or more feature classes or tables to update with the same calculation."
 
         param_field = arcpy.Parameter(
             displayName="Target Field Name",
@@ -24,6 +25,7 @@ class BatchCalculateField(object):
             parameterType="Required",
             direction="Input",
         )
+        param_field.description = "Enter the field name that will receive the calculated value in each selected layer."
 
         param_expr = arcpy.Parameter(
             displayName="Expression",
@@ -32,6 +34,7 @@ class BatchCalculateField(object):
             parameterType="Required",
             direction="Input",
         )
+        param_expr.description = "Type the value or expression to apply to the target field during the calculation."
 
         param_exp_type = arcpy.Parameter(
             displayName="Expression Type",
@@ -46,6 +49,7 @@ class BatchCalculateField(object):
             param_exp_type.filter.type = "ValueList"
             param_exp_type.filter.list = ["PYTHON3", "ARCADE", "SQL"]
             param_exp_type.value = "PYTHON3"
+        param_exp_type.description = "Choose the expression language used by the field calculation."
 
         param_code = arcpy.Parameter(
             displayName="Code Block",
@@ -54,6 +58,7 @@ class BatchCalculateField(object):
             parameterType="Optional",
             direction="Input",
         )
+        param_code.description = "Optionally provide helper logic for expressions that require a code block or custom function."
 
         params = [param_layers, param_field, param_expr, param_exp_type, param_code]
         return params

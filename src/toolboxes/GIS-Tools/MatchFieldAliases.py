@@ -21,6 +21,7 @@ class MatchFieldAliases(object):
             parameterType="Required",
             direction="Input",
         )
+        param_source.description = "Choose the source layer or table that contains the field aliases to copy."
 
         # Parameter 1: Target Layer
         param_target = arcpy.Parameter(
@@ -30,6 +31,7 @@ class MatchFieldAliases(object):
             parameterType="Required",
             direction="Input",
         )
+        param_target.description = "Choose the layer or table whose field aliases will be updated to match the source dataset."
 
         return [param_source, param_target]
 
