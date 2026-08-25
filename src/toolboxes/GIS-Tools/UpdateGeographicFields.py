@@ -5,14 +5,19 @@ import duckdb
 import pandas as pd
 
 from src.utils.auth import get_portal_token
-from src.utils.constants import URL_MGMT_BOUNDARIES, URL_PARK_LOCATIONS, URL_PARK_UNITS
+from src.utils.constants import (
+    URL_MGMT_BOUNDARIES,
+    URL_PARK_LOCATIONS,
+    URL_PARK_UNITS,
+    URL_TRAIL_UNITS,
+)
 from src.utils.data_conversion import _norm, featureclass_to_df, featureservice_to_df
 
 
 class UpdateGeographicFields(object):
     def __init__(self):
         self.label = "Update Park, Location, and Management Fields"
-        self.description = "Updates the specified standard text fields for the input layer(s) using an in-memory DuckDB spatial engine."
+        self.description = "Updates the specified target text fields for the input layer(s) using an in-memory DuckDB spatial engine."
         self.canRunInBackground = True
 
     def getParameterInfo(self):
@@ -29,37 +34,62 @@ class UpdateGeographicFields(object):
         in_layers.description = "Select one or more feature layers to update with park, location, and management attribute values."
         params.append(in_layers)
 
-        # Field update toggles
-        fields_to_add = [
-            ("update_park_code", "Update PARK_CODE", "PARK_CODE"),
-            ("update_park_name", "Update PARK_NAME", "PARK_NAME"),
-            ("update_loc_code", "Update LOCATION_CODE", "LOCATION_CODE"),
-            ("update_loc_name", "Update LOCATION_NAME", "LOCATION_NAME"),
-            ("update_mgmt_area", "Update MGMT_AREA", "MGMT_AREA"),
-            ("update_mgmt_region", "Update MGMT_REGION", "MGMT_REGION"),
+        # Field update text mapping - Updated descriptions for clarity
+        fields_to_update = [
+            (
+                "target_park_code",
+                "Target PARK_CODE Field",
+                "PARK_CODE",
+                "Provide the target field name to populate with the matching park code. To skip this update, leave this text box completely blank.",
+            ),
+            (
+                "target_park_name",
+                "Target PARK_NAME Field",
+                "PARK_NAME",
+                "Provide the target field name to populate with the matching park name. To skip this update, leave this text box completely blank.",
+            ),
+            (
+                "target_loc_code",
+                "Target LOCATION_CODE Field",
+                "LOCATION_CODE",
+                "Provide the target field name to populate with the matching location code. To skip this update, leave this text box completely blank.",
+            ),
+            (
+                "target_loc_name",
+                "Target LOCATION_NAME Field",
+                "LOCATION_NAME",
+                "Provide the target field name to populate with the matching location name. To skip this update, leave this text box completely blank.",
+            ),
+            (
+                "target_mgmt_area",
+                "Target MGMT_AREA Field",
+                "MGMT_AREA",
+                "Provide the target field name to populate with the matching management area. To skip this update, leave this text box completely blank.",
+            ),
+            (
+                "target_mgmt_region",
+                "Target MGMT_REGION Field",
+                "MGMT_REGION",
+                "Provide the target field name to populate with the matching management region. To skip this update, leave this text box completely blank.",
+            ),
+            (
+                "target_trail_name",
+                "Target TRAIL_NAME Field",
+                "TRAIL_NAME",
+                "Provide the target field name to populate with the matching trail name. To skip this update, leave this text box completely blank.",
+            ),
         ]
 
-        for name, display, _ in fields_to_add:
+        for name, display, default_val, desc in fields_to_update:
             param = arcpy.Parameter(
                 displayName=display,
                 name=name,
-                datatype="GPBoolean",
+                datatype="GPString",
                 parameterType="Optional",
                 direction="Input",
             )
-            param.value = True  # Checked by default
-            if name == "update_park_code":
-                param.description = "Populate the PARK_CODE field using the matching park feature for each record."
-            elif name == "update_park_name":
-                param.description = "Populate the PARK_NAME field using the matching park feature for each record."
-            elif name == "update_loc_code":
-                param.description = "Populate the LOCATION_CODE field using the matching park location for each record."
-            elif name == "update_loc_name":
-                param.description = "Populate the LOCATION_NAME field using the matching park location for each record."
-            elif name == "update_mgmt_area":
-                param.description = "Populate the MGMT_AREA field using the matching management boundary for each record."
-            elif name == "update_mgmt_region":
-                param.description = "Populate the MGMT_REGION field using the matching management boundary for each record."
+            param.value = default_val  # Set the string field name as default
+            param.description = desc
             params.append(param)
 
         param_def_query = arcpy.Parameter(
@@ -92,29 +122,54 @@ class UpdateGeographicFields(object):
         in_layers_text = parameters[0].valueAsText
         in_layers = in_layers_text.split(";") if in_layers_text else []
 
-        global_update_flags = {
-            "PARK_CODE": parameters[1].value,
-            "PARK_NAME": parameters[2].value,
-            "LOCATION_CODE": parameters[3].value,
-            "LOCATION_NAME": parameters[4].value,
-            "MGMT_AREA": parameters[5].value,
-            "MGMT_REGION": parameters[6].value,
+        # Helper to strictly validate and sanitize the input text
+        def _clean_val(val):
+            if val is None:
+                return None
+            clean_str = str(val).strip()
+            # ArcPy sometimes returns the literal string "None" when a parameter is cleared
+            if not clean_str or clean_str.lower() == "none":
+                return None
+            return clean_str
+
+        # Map internal processing name -> user's specified field name (or None if blank)
+        global_update_map = {
+            "PARK_CODE": _clean_val(parameters[1].valueAsText),
+            "PARK_NAME": _clean_val(parameters[2].valueAsText),
+            "LOCATION_CODE": _clean_val(parameters[3].valueAsText),
+            "LOCATION_NAME": _clean_val(parameters[4].valueAsText),
+            "MGMT_AREA": _clean_val(parameters[5].valueAsText),
+            "MGMT_REGION": _clean_val(parameters[6].valueAsText),
+            "TRAIL_NAME": _clean_val(parameters[7].valueAsText),
         }
 
-        def_query = parameters[7].valueAsText if parameters[7].value else ""
+        # Log configuration intent so it is clear in the geoprocessing history
+        arcpy.AddMessage("--- Configuration ---")
+        for internal_name, target_field in global_update_map.items():
+            if target_field:
+                arcpy.AddMessage(f"{internal_name}: Will map to field '{target_field}'")
+            else:
+                arcpy.AddMessage(
+                    f"{internal_name}: Blank parameter. Field will NOT be calculated."
+                )
+        arcpy.AddMessage("---------------------")
+
+        def_query = parameters[8].valueAsText if parameters[8].value else ""
 
         token = get_portal_token()
 
         df_parks = pd.DataFrame()
         df_locs = pd.DataFrame()
         df_mgmt = pd.DataFrame()
+        df_trails = pd.DataFrame()
 
+        # Check if we need to fetch datasets based on if any target fields are actually provided
         if any(
             [
-                global_update_flags["PARK_CODE"],
-                global_update_flags["PARK_NAME"],
-                global_update_flags["LOCATION_CODE"],
-                global_update_flags["LOCATION_NAME"],
+                global_update_map.get("PARK_CODE"),
+                global_update_map.get("PARK_NAME"),
+                global_update_map.get("LOCATION_CODE"),
+                global_update_map.get("LOCATION_NAME"),
             ]
         ):
             arcpy.AddMessage("Fetch Park Units...")
@@ -128,7 +183,10 @@ class UpdateGeographicFields(object):
             df_parks = _norm(df_parks, ["PARK_CODE", "PARK_NAME"])
 
         if any(
-            [global_update_flags["LOCATION_CODE"], global_update_flags["LOCATION_NAME"]]
+            [
+                global_update_map.get("LOCATION_CODE"),
+                global_update_map.get("LOCATION_NAME"),
+            ]
         ):
             arcpy.AddMessage("Fetch Park Locations...")
             df_locs = featureservice_to_df(
@@ -140,7 +198,9 @@ class UpdateGeographicFields(object):
             )
             df_locs = _norm(df_locs, ["PL_NAME", "PL_CODE"])
 
-        if any([global_update_flags["MGMT_AREA"], global_update_flags["MGMT_REGION"]]):
+        if any(
+            [global_update_map.get("MGMT_AREA"), global_update_map.get("MGMT_REGION")]
+        ):
             arcpy.AddMessage("Fetch Management Boundaries...")
             df_mgmt = featureservice_to_df(
                 url=URL_MGMT_BOUNDARIES,
@@ -151,12 +211,29 @@ class UpdateGeographicFields(object):
             )
             df_mgmt = _norm(df_mgmt, ["MGMT_AREA", "MGMT_REGION"])
 
+        if any([global_update_map.get("TRAIL_NAME")]):
+            arcpy.AddMessage("Fetch Trails...")
+            df_trails = featureservice_to_df(
+                url=URL_TRAIL_UNITS,
+                out_fields=["TRAIL_NAME"],
+                out_sr=2248,
+                where="TRAIL_NAME IS NOT NULL",
+                token=token,
+            )
+            df_trails = _norm(df_trails, ["TRAIL_NAME"])
+
         # process each input layer
         for i, in_layer in enumerate(in_layers, start=1):
             in_layer = in_layer.strip("'")  # remove quotes if present
             arcpy.AddMessage(f"--- Processing {i}/{len(in_layers)}: {in_layer} ---")
             self._process_input_layer(
-                in_layer, df_parks, df_locs, df_mgmt, global_update_flags, def_query
+                in_layer,
+                df_parks,
+                df_locs,
+                df_mgmt,
+                df_trails,
+                global_update_map,
+                def_query,
             )
 
         arcpy.AddMessage("Done.")
@@ -165,32 +242,43 @@ class UpdateGeographicFields(object):
         return
 
     def _process_input_layer(
-        self, in_layer, df_parks, df_locs, df_mgmt, global_update_flags, def_query
+        self,
+        in_layer,
+        df_parks,
+        df_locs,
+        df_mgmt,
+        df_trails,
+        global_update_map,
+        def_query,
     ):
-        update_flags = global_update_flags.copy()
+        # Extract only the fields where the user actually provided a valid string name
+        active_updates = {k: v for k, v in global_update_map.items() if v is not None}
 
-        target_fields = [f for f, do_update in update_flags.items() if do_update]
-        if not target_fields:
-            arcpy.AddMessage("No fields selected for update. Skipping layer.")
+        if not active_updates:
+            arcpy.AddMessage("No target fields provided for update. Skipping layer.")
             return
 
         try:
             oid_field = arcpy.Describe(in_layer).OIDFieldName
             arcpy.AddMessage(f"OBJECTID field for layer is: {oid_field}")
 
-            # Ensure fields exist - If missing, dynamically treat as unchecked
+            # Ensure the provided target fields actually exist in this specific layer's schema
             arcpy.AddMessage("Step 1: Check existing fields...")
-            existing = {f.name for f in arcpy.ListFields(in_layer)}
+            existing_fields = {
+                f.name.lower(): f.name for f in arcpy.ListFields(in_layer)
+            }
 
-            for f in list(target_fields):
-                if f not in existing:
+            valid_updates = {}
+            for src_attr, dest_field in active_updates.items():
+                if dest_field.lower() not in existing_fields:
                     arcpy.AddWarning(
-                        f"Field '{f}' does not exist in {in_layer}. Treating as unchecked."
+                        f"Field '{dest_field}' does not exist in {in_layer}. Skipping this field."
                     )
-                    update_flags[f] = False
+                else:
+                    # Map the internal attr name to the exact casing of the existing field name
+                    valid_updates[src_attr] = existing_fields[dest_field.lower()]
 
-            target_fields = [f for f, do_update in update_flags.items() if do_update]
-            if not target_fields:
+            if not valid_updates:
                 arcpy.AddWarning(
                     "No valid fields remain to update for this layer. Skipping."
                 )
@@ -229,18 +317,19 @@ class UpdateGeographicFields(object):
 
             need_parks = not df_parks.empty and any(
                 [
-                    update_flags.get("PARK_CODE"),
-                    update_flags.get("PARK_NAME"),
-                    update_flags.get("LOCATION_CODE"),
-                    update_flags.get("LOCATION_NAME"),
+                    valid_updates.get("PARK_CODE"),
+                    valid_updates.get("PARK_NAME"),
+                    valid_updates.get("LOCATION_CODE"),
+                    valid_updates.get("LOCATION_NAME"),
                 ]
             )
             need_locs = not df_locs.empty and any(
-                [update_flags.get("LOCATION_CODE"), update_flags.get("LOCATION_NAME")]
+                [valid_updates.get("LOCATION_CODE"), valid_updates.get("LOCATION_NAME")]
             )
             need_mgmt = not df_mgmt.empty and any(
-                [update_flags.get("MGMT_AREA"), update_flags.get("MGMT_REGION")]
+                [valid_updates.get("MGMT_AREA"), valid_updates.get("MGMT_REGION")]
             )
+            need_trails = not df_trails.empty and any([valid_updates.get("TRAIL_NAME")])
 
             if need_parks:
                 con.register("df_parks", df_parks)
@@ -248,6 +337,8 @@ class UpdateGeographicFields(object):
                 con.register("df_locs", df_locs)
             if need_mgmt:
                 con.register("df_mgmt", df_mgmt)
+            if need_trails:
+                con.register("df_trails", df_trails)
 
             # Construct DuckDB CTE SQL Query
             query_ctes = [
@@ -297,26 +388,41 @@ class UpdateGeographicFields(object):
                 )
                 """)
 
+            if need_trails:
+                query_ctes.append("""
+                trails AS (SELECT TRAIL_NAME, ST_GeomFromWKB(GEOMWKB) AS geom FROM df_trails WHERE GEOMWKB IS NOT NULL),
+                trail_nearest AS (
+                    SELECT s.OBJECTID, tn.TRAIL_NAME AS TRAIL_NAME_near, tn.dist_to_trail
+                    FROM base s
+                    CROSS JOIN LATERAL (
+                        SELECT t.TRAIL_NAME, ST_Distance(s.geom, t.geom) AS dist_to_trail
+                        FROM trails t
+                        ORDER BY dist_to_trail ASC
+                        LIMIT 1
+                    ) tn
+                )
+                """)
+
             cte_string = "WITH " + ",\n".join(query_ctes)
 
             # Build Select statements following the COALESCE logic
             selects = ["SELECT b.OBJECTID"]
 
-            if update_flags.get("PARK_CODE"):
+            if valid_updates.get("PARK_CODE"):
                 selects.append("""
                 ,COALESCE(
                     pi.PARK_CODE
                     ,CASE WHEN pn.dist_to_park <= 100 THEN pn.PARK_CODE_near ELSE NULL END
                 ) AS PARK_CODE
                 """)
-            if update_flags.get("PARK_NAME"):
+            if valid_updates.get("PARK_NAME"):
                 selects.append("""
                 ,COALESCE(
                     pi.PARK_NAME
                     ,CASE WHEN pn.dist_to_park <= 100 THEN pn.PARK_NAME_near ELSE NULL END
                 ) AS PARK_NAME
                 """)
-            if update_flags.get("LOCATION_CODE"):
+            if valid_updates.get("LOCATION_CODE"):
                 selects.append("""
                 ,COALESCE(
                     li.PL_CODE
@@ -324,7 +430,7 @@ class UpdateGeographicFields(object):
                     ,CASE WHEN pn.dist_to_park <= 100 THEN pn.PARK_CODE_near ELSE NULL END
                 ) AS LOCATION_CODE
                 """)
-            if update_flags.get("LOCATION_NAME"):
+            if valid_updates.get("LOCATION_NAME"):
                 selects.append("""
                 ,COALESCE(
                     li.PL_NAME
@@ -332,10 +438,14 @@ class UpdateGeographicFields(object):
                     ,CASE WHEN pn.dist_to_park <= 100 THEN pn.PARK_NAME_near ELSE NULL END
                 ) AS LOCATION_NAME
                 """)
-            if update_flags.get("MGMT_AREA"):
+            if valid_updates.get("MGMT_AREA"):
                 selects.append(",mi.MGMT_AREA")
-            if update_flags.get("MGMT_REGION"):
+            if valid_updates.get("MGMT_REGION"):
                 selects.append(",mi.MGMT_REGION")
+            if valid_updates.get("TRAIL_NAME"):
+                selects.append("""
+                ,CASE WHEN tn.dist_to_trail <= 50 THEN tn.TRAIL_NAME_near ELSE NULL END AS TRAIL_NAME
+                """)
 
             # Join logic
             joins = ["FROM base b"]
@@ -346,6 +456,8 @@ class UpdateGeographicFields(object):
                 joins.append("INNER JOIN loc_intersect li ON b.OBJECTID = li.OBJECTID")
             if need_mgmt:
                 joins.append("INNER JOIN mgmt_intersect mi ON b.OBJECTID = mi.OBJECTID")
+            if need_trails:
+                joins.append("INNER JOIN trail_nearest tn ON b.OBJECTID = tn.OBJECTID")
 
             full_query = (
                 cte_string + "\n" + "\n".join(selects) + "\n" + "\n".join(joins)
@@ -361,9 +473,11 @@ class UpdateGeographicFields(object):
                 oid = row["OBJECTID"]
                 update_map[oid] = row.to_dict()
 
-            # UpdateCursor writeback (using the definition query directly on the cursor)
+            # UpdateCursor writeback using dynamically mapped schema
             arcpy.AddMessage("Step 4: UpdateCursor writeback...")
-            cursor_fields = ["OID@"] + target_fields
+
+            # Use the destination field names for the cursor
+            cursor_fields = ["OID@"] + list(valid_updates.values())
             valid_where = def_query if def_query else None
 
             with arcpy.da.UpdateCursor(
@@ -374,9 +488,12 @@ class UpdateGeographicFields(object):
                     vals = update_map.get(oid)
                     if vals:
                         new_row = [oid]
-                        for f in target_fields:
-                            val = vals.get(f)
+
+                        # Read from the DuckDB output (src_attr) and write to Cursor
+                        for src_attr, dest_field in valid_updates.items():
+                            val = vals.get(src_attr)
                             new_row.append(None if pd.isna(val) else val)
+
                         cur.updateRow(new_row)
 
             # Safely destroy cursor references
