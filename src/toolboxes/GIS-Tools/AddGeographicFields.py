@@ -28,6 +28,7 @@ class AddGeographicFields(object):
             ("add_loc_name", "Add LOCATION_NAME", "LOCATION_NAME"),
             ("add_mgmt_area", "Add MGMT_AREA", "MGMT_AREA"),
             ("add_mgmt_region", "Add MGMT_REGION", "MGMT_REGION"),
+            ("add_trail_name", "Add TRAIL_NAME", "TRAIL_NAME"),
         ]
 
         for name, display, _ in fields_to_add:
@@ -59,6 +60,7 @@ class AddGeographicFields(object):
                 "LOCATION_NAME": 4,
                 "MGMT_AREA": 5,
                 "MGMT_REGION": 6,
+                "TRAIL_NAME": 7,
             }
 
             # Determine which fields exist across all selected layers
@@ -98,6 +100,7 @@ class AddGeographicFields(object):
             "LOCATION_NAME": parameters[4].value,
             "MGMT_AREA": parameters[5].value,
             "MGMT_REGION": parameters[6].value,
+            "TRAIL_NAME": parameters[7].value,
         }
 
         # Defined standard lengths for string fields to keep schema consistent
@@ -108,6 +111,7 @@ class AddGeographicFields(object):
             "LOCATION_NAME": 80,
             "MGMT_AREA": 15,
             "MGMT_REGION": 15,
+            "TRAIL_NAME": 80,
         }
 
         field_aliases = {
@@ -117,6 +121,7 @@ class AddGeographicFields(object):
             "LOCATION_CODE": "Location Code",
             "MGMT_AREA": "Managagement Area",
             "MGMT_REGION": "Managagement Region",
+            "TRAIL_NAME": "Trail Name",
         }
 
         target_fields = [f for f, do_add in flags.items() if do_add]
