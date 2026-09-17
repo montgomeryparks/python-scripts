@@ -61,7 +61,7 @@ def featureservice_to_df(
         data = response.json()
 
         if "error" in data:
-            raise Exception(f"ArcGIS Error: {data['error'].get('message')}")
+            raise ValueError(f"ArcGIS Error: {data['error'].get('message')}")
 
         features = data.get("features", [])
         if not features:
@@ -81,8 +81,8 @@ def featureservice_to_df(
         if geom_dict:
             try:
                 props["GEOMWKB"] = shape(geom_dict).wkb
-            except Exception:
-                props["GEOMWKB"] = None
+            except ValueError:
+                raise ValueError(f"Geometry failed to read: {geom_dict}")
         else:
             props["GEOMWKB"] = None
         rows.append(props)
