@@ -4,7 +4,7 @@ import os
 import arcpy
 
 
-class ImportSynapseSchema(object):
+class ImportSynapseSchema:
     def __init__(self):
         self.label = "Create Feature Class from Synapse CSV"
         self.description = "Creates an ArcGIS Feature Class using a schema exported from Azure Synapse SQL metadata."
@@ -64,7 +64,9 @@ class ImportSynapseSchema(object):
         )
         param_geom.filter.list = ["POINT", "MULTIPOINT", "POLYLINE", "POLYGON", "Null"]
         param_geom.value = "POINT"
-        param_geom.description = "Select the geometry type that matches the feature class being created."
+        param_geom.description = (
+            "Select the geometry type that matches the feature class being created."
+        )
 
         # Parameter 5: Spatial Reference
         param_sr = arcpy.Parameter(
@@ -76,7 +78,9 @@ class ImportSynapseSchema(object):
         )
         # Defaulting to WKID 2248
         param_sr.value = arcpy.SpatialReference(2248)
-        param_sr.description = "Set the coordinate system to use for the feature class geometry."
+        param_sr.description = (
+            "Set the coordinate system to use for the feature class geometry."
+        )
 
         # Parameter 6: Fields to Exclude (Exact Name)
         param_ex_names = arcpy.Parameter(
@@ -88,7 +92,9 @@ class ImportSynapseSchema(object):
             multiValue=True,
         )
         param_ex_names.value = ["OBJECTID", "Shape", "GlobalID", "GEOMWKB", "GEOMWKT"]
-        param_ex_names.description = "Optional exact field names to skip when creating the output schema."
+        param_ex_names.description = (
+            "Optional exact field names to skip when creating the output schema."
+        )
 
         # Parameter 7: Field Prefixes to Exclude
         param_ex_prefixes = arcpy.Parameter(
@@ -100,7 +106,9 @@ class ImportSynapseSchema(object):
             multiValue=True,
         )
         param_ex_prefixes.value = ["GEOM_", "INGEST_"]
-        param_ex_prefixes.description = "Optional field-name prefixes to ignore when building the schema."
+        param_ex_prefixes.description = (
+            "Optional field-name prefixes to ignore when building the schema."
+        )
 
         # Parameter 8: Field Suffixes to Exclude
         param_ex_suffixes = arcpy.Parameter(
@@ -112,7 +120,9 @@ class ImportSynapseSchema(object):
             multiValue=True,
         )
         param_ex_suffixes.value = ["_AREAS"]
-        param_ex_suffixes.description = "Optional field-name suffixes to exclude from the generated output fields."
+        param_ex_suffixes.description = (
+            "Optional field-name suffixes to exclude from the generated output fields."
+        )
 
         return [
             param_csv,
@@ -259,12 +269,11 @@ class ImportSynapseSchema(object):
                 field_type = "SHORT"
             elif data_type in ["decimal", "numeric", "float", "real"]:
                 field_type = "DOUBLE"
-            elif data_type in ["datetime", "datetime2"]:
+            elif data_type in ["datetime", "datetime2", "datetimeoffset"]:
+                # datetimeoffset is not supported by ArcGIS Data Pipelines
                 field_type = "DATE"
             elif data_type in ["date"]:
                 field_type = "DATEONLY"
-            elif data_type in ["datetimeoffset"]:
-                field_type = "TIMESTAMPOFFSET"
             else:
                 messages.addWarningMessage(
                     f"Skipping unmapped system/spatial data type: {col_name} ({data_type})"
@@ -281,7 +290,7 @@ class ImportSynapseSchema(object):
                     field_length=field_length if field_type == "TEXT" else None,
                 )
             except Exception as e:
-                messages.addErrorMessage(f"Failed to add field {clean_name}: {str(e)}")
+                messages.addErrorMessage(f"Failed to add field {clean_name}: {e!s}")
 
         arcpy.SetProgressorLabel("Processing complete.")
         messages.addMessage("Processing complete.")
