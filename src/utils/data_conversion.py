@@ -15,7 +15,7 @@ def featureservice_to_df(
     query_url = f"{base_url}/query"
     base_params = {"f": "json"}
 
-    access_resp = requests.get(base_url, params=base_params)
+    access_resp = requests.get(base_url, params=base_params, verify=False)
     access_resp.raise_for_status()
     if "error" in access_resp.json() and access_resp.json()["error"].get("code") == 499:
         base_params["token"] = token
@@ -25,13 +25,13 @@ def featureservice_to_df(
         token = ""
 
     # 1) maxRecordCount
-    meta_resp = requests.get(base_url, params=base_params)
+    meta_resp = requests.get(base_url, params=base_params, verify=False)
     meta_resp.raise_for_status()
     max_record_count = meta_resp.json().get("maxRecordCount", 1000)
 
     # 2) total count
     count_params = {**base_params, "where": where, "returnCountOnly": "true"}
-    count_resp = requests.get(query_url, params=count_params)
+    count_resp = requests.get(query_url, params=count_params, verify=False)
     count_resp.raise_for_status()
     total_records = count_resp.json().get("count", 0)
 
@@ -56,7 +56,7 @@ def featureservice_to_df(
         if token:
             fetch_params["token"] = token
 
-        response = requests.get(query_url, params=fetch_params)
+        response = requests.get(query_url, params=fetch_params, verify=False)
         response.raise_for_status()
         data = response.json()
 
