@@ -97,6 +97,7 @@ def _norm(df, cols):
     return df
 
 
+# TODO: accept table input in addition to layer input
 def featureclass_to_df(
     in_layer, out_sr=2248, oid_field_out="OBJECTID", where_clause=None
 ):
