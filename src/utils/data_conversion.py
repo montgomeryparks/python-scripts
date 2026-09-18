@@ -15,6 +15,7 @@ def featureservice_to_df(
     query_url = f"{base_url}/query"
     base_params = {"f": "json"}
 
+    requests.packages.urllib3.disable_warnings()
     access_resp = requests.get(base_url, params=base_params, verify=False)
     access_resp.raise_for_status()
     if "error" in access_resp.json() and access_resp.json()["error"].get("code") == 499:
@@ -24,12 +25,10 @@ def featureservice_to_df(
         arcpy.AddMessage("Service is public; no token needed.")
         token = ""
 
-    # 1) maxRecordCount
     meta_resp = requests.get(base_url, params=base_params, verify=False)
     meta_resp.raise_for_status()
     max_record_count = meta_resp.json().get("maxRecordCount", 1000)
 
-    # 2) total count
     count_params = {**base_params, "where": where, "returnCountOnly": "true"}
     count_resp = requests.get(query_url, params=count_params, verify=False)
     count_resp.raise_for_status()
@@ -73,7 +72,6 @@ def featureservice_to_df(
     if not all_features:
         return pd.DataFrame()
 
-    # Convert GeoJSON to DataFrame with WKB binary
     rows = []
     for feat in all_features:
         props = feat.get("properties", {})
@@ -97,30 +95,67 @@ def _norm(df, cols):
     return df
 
 
-# TODO: accept table input in addition to layer input
 def featureclass_to_df(
-    in_layer, out_sr=2248, oid_field_out="OBJECTID", where_clause=None
+    in_table,
+    fields=None,
+    out_sr=2248,
+    oid_field_out="OBJECTID",
+    where_clause=None,
+    spatial_filter=None,
+    spatial_rel="INTERSECTS",
 ):
-    """
-    Returns a standard Pandas DataFrame containing a stable OID and geometry WKB byte arrays.
-    """
-    sr = arcpy.SpatialReference(out_sr)
-    desc = arcpy.Describe(in_layer)
-    oid_name = desc.OIDFieldName
+    desc = arcpy.Describe(in_table)
+    is_spatial = hasattr(desc, "shapeType") and desc.shapeType != ""
 
-    oids = []
-    geoms = []
+    if not fields:
+        fields = [
+            f.name
+            for f in arcpy.ListFields(in_table)
+            if f.type not in ("Geometry", "Raster", "Blob")
+        ]
 
-    valid_where = where_clause if where_clause else None
+    cursor_fields = list(fields)
 
-    with arcpy.da.SearchCursor(
-        in_layer,
-        [oid_name, "SHAPE@WKB"],
-        where_clause=valid_where,
-        spatial_reference=sr,
-    ) as cursor:
+    if (
+        oid_field_out
+        and oid_field_out not in cursor_fields
+        and hasattr(desc, "OIDFieldName")
+    ):
+        cursor_fields.insert(0, desc.OIDFieldName)
+
+    if is_spatial and "SHAPE@WKB" not in cursor_fields:
+        cursor_fields.append("SHAPE@WKB")
+
+    kwargs = {}
+    if where_clause:
+        kwargs["where_clause"] = where_clause
+    if out_sr and is_spatial:
+        kwargs["spatial_reference"] = (
+            arcpy.SpatialReference(out_sr) if isinstance(out_sr, int) else out_sr
+        )
+    if spatial_filter and is_spatial:
+        kwargs["spatial_filter"] = spatial_filter
+        kwargs["spatial_relationship"] = spatial_rel
+
+    records = []
+    with arcpy.da.SearchCursor(in_table, cursor_fields, **kwargs) as cursor:
         for row in cursor:
-            oids.append(row[0])
-            geoms.append(bytes(row[1]) if row[1] else None)
+            records.append(row)
 
-    return pd.DataFrame({oid_field_out: oids, "GEOMWKB": geoms})
+    df = pd.DataFrame(records, columns=cursor_fields)
+
+    if is_spatial and "SHAPE@WKB" in df.columns:
+        df["GEOMWKB"] = df["SHAPE@WKB"].apply(lambda x: bytes(x) if x else None)
+        df.drop(columns=["SHAPE@WKB"], inplace=True)
+
+    return df
+
+
+def map_pandas_dtype_to_arcpy(dtype):
+    if pd.api.types.is_integer_dtype(dtype):
+        return "LONG"
+    elif pd.api.types.is_float_dtype(dtype):
+        return "DOUBLE"
+    elif pd.api.types.is_datetime64_any_dtype(dtype):
+        return "DATE"
+    return "TEXT"
