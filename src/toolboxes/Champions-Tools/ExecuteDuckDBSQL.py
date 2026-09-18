@@ -1,9 +1,10 @@
 import re
+from typing import Literal
 
 import arcpy
 import duckdb
 import pandas as pd
-import shapely
+from shapely import wkb
 
 from src.utils.data_conversion import (
     _norm,
@@ -221,7 +222,7 @@ class ExecuteDuckDBSQL:
 
         # Respect explicit arcpy.env.extent bounding box constraints if the user set them
         env_ext = arcpy.env.extent
-        if env_ext and env_ext.XMin is not None:
+        if not isinstance(env_ext, str) and env_ext and env_ext.XMin is not None:
             cumulative_extent = arcpy.Polygon(
                 arcpy.Array(
                     [
@@ -253,7 +254,7 @@ class ExecuteDuckDBSQL:
                 df = featureclass_to_df(
                     in_table=lyr,
                     fields=selected_field_names,
-                    out_sr=active_map.spatialReference,
+                    out_sr=active_map.spatialReference.factoryCode,
                     where_clause=cursor_where,
                     spatial_filter=spatial_filter,
                     spatial_rel="INTERSECTS",
@@ -269,7 +270,7 @@ class ExecuteDuckDBSQL:
                     and "GEOMWKB" in df.columns
                 ):
                     try:
-                        geoms = [shapely.wkb.loads(w) for w in df["GEOMWKB"] if w]
+                        geoms = [wkb.loads(w) for w in df["GEOMWKB"] if w]
                         if geoms:
                             minx = min(g.bounds[0] for g in geoms)
                             miny = min(g.bounds[1] for g in geoms)
@@ -364,7 +365,9 @@ class ExecuteDuckDBSQL:
         spatial_ref = active_map.spatialReference
         shape_col = spatial_cols[0] if spatial_cols else None
 
-        duckdb_geom_map = {
+        duckdb_geom_map: dict[
+            str, Literal["POINT", "MULTIPOINT", "POLYGON", "POLYLINE"]
+        ] = {
             "POINT": "POINT",
             "LINESTRING": "POLYLINE",
             "POLYGON": "POLYGON",
@@ -375,7 +378,7 @@ class ExecuteDuckDBSQL:
         }
 
         is_spatial_output = False
-        out_geom = "POLYGON"
+        out_geom: Literal["POINT", "MULTIPOINT", "POLYGON", "POLYLINE"] = "POLYGON"
 
         if shape_col and shape_col in res_df.columns:
             try:
@@ -407,6 +410,7 @@ class ExecuteDuckDBSQL:
             )
 
         if is_spatial_output:
+            assert shape_col is not None
             insert_fields = attribute_cols + ["SHAPE@"]
             with arcpy.da.InsertCursor(out_path, insert_fields) as inserter:
                 for _, row in res_df.iterrows():
