@@ -1,3 +1,4 @@
+import logging
 import re
 from typing import Literal
 
@@ -6,6 +7,7 @@ import duckdb
 import pandas as pd
 from shapely import wkb
 
+from src.utils.arc_logging import setup_arcgis_logging
 from src.utils.data_conversion import (
     _norm,
     featureclass_to_df,
@@ -16,6 +18,8 @@ from src.utils.sql import (
     get_referenced_fields,
     sanitize_where_clause,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ExecuteDuckDBSQL:
@@ -87,7 +91,7 @@ class ExecuteDuckDBSQL:
             try:
                 with open(sql_file, "r", encoding="utf-8") as f:
                     query = f.read()
-            except Exception as e:
+            except (OSError, UnicodeError) as e:
                 file_param.setErrorMessage(f"Could not read file: {e}")
                 return
         elif query_text:
@@ -125,11 +129,13 @@ class ExecuteDuckDBSQL:
                                     con.execute(
                                         f"CREATE TABLE {clean_name} ({', '.join(fields)})"
                                     )
-                except Exception:
-                    pass
+                except (OSError, RuntimeError, duckdb.Error) as exc:
+                    logger.warning(
+                        f"Could not load active map layer schemas for SQL validation: {exc}"
+                    )
 
                 con.execute(f"PREPARE v1 AS {query}")
-            except Exception as e:
+            except (duckdb.Error, OSError, RuntimeError) as e:
                 err_msg = str(e)
                 clean_msg = (
                     err_msg.split("\n")[0]
@@ -145,6 +151,10 @@ class ExecuteDuckDBSQL:
                     target_param.setErrorMessage(f"SQL Error: {clean_msg}")
 
     def execute(self, parameters, messages):
+        setup_arcgis_logging(logging.DEBUG)
+
+        logger.info("DuckDB tool execution started.")
+
         arcpy.env.overwriteOutput = True
 
         arcpy.SetProgressor("default", "Initializing tool and validating inputs...")
@@ -154,7 +164,7 @@ class ExecuteDuckDBSQL:
         raw_out_name = parameters[2].valueAsText
 
         if query_text and sql_file:
-            arcpy.AddError("Provide either a SQL Query OR a SQL File, not both.")
+            logger.error("Provide either a SQL Query OR a SQL File, not both.")
             return
 
         if sql_file:
@@ -163,7 +173,7 @@ class ExecuteDuckDBSQL:
         elif query_text:
             query = query_text
         else:
-            arcpy.AddError(
+            logger.error(
                 "You must provide either a SQL query string or load a .sql file."
             )
             return
@@ -173,22 +183,22 @@ class ExecuteDuckDBSQL:
             out_name = f"tbl_{out_name}"
 
         if out_name != raw_out_name:
-            arcpy.AddWarning(
+            logger.warning(
                 f"Output Dataset Name '{raw_out_name}' was scrubbed to '{out_name}' to meet workspace naming rules."
             )
 
         aprx = arcpy.mp.ArcGISProject("CURRENT")
         active_map = aprx.activeMap
         if not active_map:
-            arcpy.AddError("No active map found.")
+            logger.error("No active map found.")
             return
 
         arcpy.SetProgressorLabel("Initializing DuckDB engine and spatial extensions...")
         con = duckdb.connect(database=":memory:")
         try:
             con.execute("INSTALL spatial; LOAD spatial;")
-        except Exception as e:
-            arcpy.AddWarning(f"Spatial extension could not be loaded: {e}")
+        except duckdb.Error as e:
+            logger.warning(f"Spatial extension could not be loaded: {e}")
 
         layer_field_map = {}
         referenced_layers = []
@@ -246,7 +256,7 @@ class ExecuteDuckDBSQL:
             spatial_filter = None
             if cumulative_extent and getattr(lyr, "isFeatureLayer", False):
                 spatial_filter = cumulative_extent
-                arcpy.AddMessage(
+                logger.info(
                     f"Pushing down spatial bounding box filter to '{clean_name}'"
                 )
 
@@ -294,8 +304,8 @@ class ExecuteDuckDBSQL:
                                 if cumulative_extent
                                 else layer_env
                             )
-                    except Exception as e:
-                        arcpy.AddWarning(
+                    except (TypeError, ValueError, RuntimeError) as e:
+                        logger.warning(
                             f"Could not calculate extent for {clean_name}: {e}"
                         )
 
@@ -308,25 +318,25 @@ class ExecuteDuckDBSQL:
                 else:
                     con.execute(f"CREATE VIEW {clean_name} AS SELECT * FROM {raw_name}")
 
-                arcpy.AddMessage(f"Registered {clean_name} ({len(df)} rows)")
-            except Exception as e:
-                arcpy.AddWarning(
+                logger.info(f"Registered {clean_name} ({len(df)} rows)")
+            except (TypeError, ValueError, RuntimeError, duckdb.Error) as e:
+                logger.warning(
                     f"Failed to register {lyr.name}: {str(e).splitlines()[0]}"
                 )
 
         arcpy.SetProgressorLabel("Executing DuckDB SQL...")
-        arcpy.AddMessage("Executing DuckDB SQL...")
+        logger.info("Executing DuckDB SQL...")
 
         try:
             con.execute(f"CREATE TEMP TABLE _user_result AS {query}")
-        except Exception as e:
+        except duckdb.Error as e:
             clean_msg = (
                 str(e)
                 .split("\n")[0]
                 .replace("Binder Error: ", "")
                 .replace("Parser Error: ", "")
             )
-            arcpy.AddError(f"SQL Error: {clean_msg}")
+            logger.error(f"SQL Error: {clean_msg}")
             return
 
         col_info = con.execute("PRAGMA table_info('_user_result')").fetchall()
@@ -347,7 +357,7 @@ class ExecuteDuckDBSQL:
         res_df = con.execute(final_query).df()
 
         if res_df.empty:
-            arcpy.AddWarning("Query executed successfully but returned 0 rows.")
+            logger.warning("Query executed successfully but returned 0 rows.")
             return
 
         arcpy.SetProgressorLabel("Writing results to map dataset...")
@@ -386,8 +396,11 @@ class ExecuteDuckDBSQL:
                 geom_res = con.execute(geom_query).fetchone()
                 if geom_res and geom_res[0]:
                     out_geom = duckdb_geom_map.get(geom_res[0], "POLYGON")
-            except Exception:
-                pass
+            except duckdb.Error:
+                logger.warning(
+                    "Unable to determine output geometry type; defaulting to POLYGON.",
+                    exc_info=True,
+                )
 
             arcpy.management.CreateFeatureclass(
                 "memory", out_name, out_geom, spatial_reference=spatial_ref
@@ -423,7 +436,7 @@ class ExecuteDuckDBSQL:
                         row[c] if pd.notnull(row[c]) else None for c in attribute_cols
                     ]
                     inserter.insertRow(attrs + [geom])
-            arcpy.AddMessage(
+            logger.info(
                 f"Created Spatial Layer: {out_path} (Auto-detected: {out_geom})"
             )
         else:
@@ -435,7 +448,7 @@ class ExecuteDuckDBSQL:
                             for c in attribute_cols
                         ]
                         inserter.insertRow(attrs)
-            arcpy.AddMessage(f"Created Table: {out_path}")
+            logger.info(f"Created Table: {out_path}")
 
         parameters[3].value = out_path
         arcpy.ResetProgressor()
