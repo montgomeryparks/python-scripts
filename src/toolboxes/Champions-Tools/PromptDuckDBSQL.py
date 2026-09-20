@@ -138,10 +138,49 @@ class PromptDuckDBSQL:
         lines.append(
             "This report describes every layer/table visible in the active web "
             "map. Copy the entire contents and paste it into an AI chat (MS365 "
-            "CoPilot, Gemini, etc.) along with a request such as:\n"
-            '"Write a DuckDB SQL query that ..." and then test the generated '
-            "SQL with the companion tool **Execute DuckDB Spatial SQL**."
+            "CoPilot, Gemini, ChatGPT, etc.) along with your analytical request."
         )
+        lines.append("")
+        lines.append("## AI Assistant Instructions & Context")
+        lines.append("")
+        lines.append(
+            "When helping the user write DuckDB SQL queries based on this report, please adhere to the following guidelines and context:"
+        )
+        lines.append("")
+        lines.append(
+            "1. **Execution Engine**: The queries will be tested and executed using the companion ArcGIS Pro tool **Execute DuckDB Spatial SQL** (`src/toolboxes/Champions-Tools/ExecuteDuckDBSQL.py`)."
+        )
+        lines.append(
+            "2. **SQL Dialect & Extensions**: Assume **DuckDB** SQL syntax with the DuckDB **Spatial Extension** already installed and loaded (`INSTALL spatial; LOAD spatial;`)."
+        )
+        lines.append(
+            "3. **Table & Column Naming Conventions**:"
+        )
+        lines.append(
+            "   - Active map layers and tables are available as tables in DuckDB."
+        )
+        lines.append(
+            "   - Table names correspond to layer/table names with spaces replaced by underscores (e.g., `My Layer Name` -> `My_Layer_Name`)."
+        )
+        lines.append(
+            "   - Spatial feature layers include a geometry column named `GEOM` (e.g., usable in spatial functions like `ST_Intersects(a.GEOM, b.GEOM)`, `ST_Within`, `ST_DWithin`)."
+        )
+        lines.append(
+            "4. **Performance & Best Practices**:"
+        )
+        lines.append(
+            "   - **Predicate Pushdown**: Always apply `WHERE` clauses where applicable to filter rows at the source, taking advantage of attribute and spatial predicate pushdown for optimal performance."
+        )
+        lines.append(
+            "   - **Selective Projection**: Select only the specific fields necessary (`SELECT col1, col2 FROM ...`) rather than `SELECT *`."
+        )
+        lines.append(
+            "5. **Interactive Clarification**:"
+        )
+        lines.append(
+            "   - If the user's request is broad or ambiguous, ask targeted clarifying questions about desired filters, threshold values, join conditions, spatial relationships, or output attributes before providing the final SQL query."
+        )
+        lines.append("")
         lines.append("---")
         lines.append("")
 
