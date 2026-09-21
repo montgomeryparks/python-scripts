@@ -153,9 +153,7 @@ class PromptDuckDBSQL:
         lines.append(
             "2. **SQL Dialect & Extensions**: Assume **DuckDB** SQL syntax with the DuckDB **Spatial Extension** already installed and loaded (`INSTALL spatial; LOAD spatial;`)."
         )
-        lines.append(
-            "3. **Table & Column Naming Conventions**:"
-        )
+        lines.append("3. **Table & Column Naming Conventions**:")
         lines.append(
             "   - Active map layers and tables are available as tables in DuckDB."
         )
@@ -165,18 +163,14 @@ class PromptDuckDBSQL:
         lines.append(
             "   - Spatial feature layers include a geometry column named `GEOM` (e.g., usable in spatial functions like `ST_Intersects(a.GEOM, b.GEOM)`, `ST_Within`, `ST_DWithin`)."
         )
-        lines.append(
-            "4. **Performance & Best Practices**:"
-        )
+        lines.append("4. **Performance & Best Practices**:")
         lines.append(
             "   - **Predicate Pushdown**: Always apply `WHERE` clauses where applicable to filter rows at the source, taking advantage of attribute and spatial predicate pushdown for optimal performance."
         )
         lines.append(
             "   - **Selective Projection**: Select only the specific fields necessary (`SELECT col1, col2 FROM ...`) rather than `SELECT *`."
         )
-        lines.append(
-            "5. **Interactive Clarification**:"
-        )
+        lines.append("5. **Interactive Clarification**:")
         lines.append(
             "   - If the user's request is broad or ambiguous, ask targeted clarifying questions about desired filters, threshold values, join conditions, spatial relationships, or output attributes before providing the final SQL query."
         )
@@ -218,8 +212,11 @@ class PromptDuckDBSQL:
             lines.append(f"- **Row Count**: {row_count}")
             if is_fl:
                 try:
-                    sr = lyr.spatialReference
-                    lines.append(f"- **Spatial Reference**: {sr.name}")
+                    # ArcPy exposes spatialReference on feature layers at
+                    # runtime, but its type stubs do not declare it on Layer.
+                    sr = getattr(lyr, "spatialReference", None)
+                    if sr is not None:
+                        lines.append(f"- **Spatial Reference**: {sr.name}")
                 except (RuntimeError, OSError):
                     pass
             lines.append("")
