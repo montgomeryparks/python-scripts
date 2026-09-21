@@ -1,4 +1,5 @@
 import logging
+import os
 
 import arcpy
 
@@ -13,8 +14,8 @@ class PromptDuckDBSQL:
         self.description = (
             "Scans all layers and tables in the active web map and produces a "
             "Markdown report of names, schemas, data types, and distinct text "
-            "values. Intended to be pasted into an AI chat (MS365 CoPilot, "
-            "Gemini) so the user can request DuckDB SQL queries to test with the "
+            "values. Intended to be pasted into an AI chat (e.g. MS365 CoPilot), "
+            "so the user can request DuckDB SQL queries to test with the "
             "sister 'Execute DuckDB Spatial SQL' tool."
         )
         self.canRunInBackground = False
@@ -27,8 +28,20 @@ class PromptDuckDBSQL:
             parameterType="Required",
             direction="Input",
         )
-        param_output.filter.list = ["md", "markdown"]  # pyright: ignore[reportOptionalMemberAccess]
-        param_output.value = "LayerSchemaReport.md"
+        param_output.filter.list = ["md"]
+
+        # Dynamically set default path to the project home folder or workspace directory
+        try:
+            aprx = arcpy.mp.ArcGISProject("CURRENT")
+            base_dir = aprx.homeFolder
+        except Exception:
+            base_dir = arcpy.env.workspace or arcpy.env.scratchFolder
+
+        # If the workspace is a geodatabase, step out into its parent folder
+        if base_dir and str(base_dir).lower().endswith(".gdb"):
+            base_dir = os.path.dirname(base_dir)
+
+        param_output.value = os.path.join(base_dir or "", "Prompt_DuckDB_SQL.md")
 
         param_max_distinct = arcpy.Parameter(
             displayName="Max Distinct Values per Text Field",
@@ -115,7 +128,6 @@ class PromptDuckDBSQL:
         logger.info("PromptDuckDBSQL execution started.")
 
         arcpy.env.overwriteOutput = True
-
         arcpy.SetProgressor("default", "Scanning active map layers...")
 
         output_file = parameters[0].valueAsText
@@ -170,7 +182,14 @@ class PromptDuckDBSQL:
         lines.append(
             "   - **Selective Projection**: Select only the specific fields necessary (`SELECT col1, col2 FROM ...`) rather than `SELECT *`."
         )
-        lines.append("5. **Interactive Clarification**:")
+        lines.append("5. **Strict AI Generation Rules**:")
+        lines.append(
+            "   - **One Query Only**: NEVER provide multiple SQL options or variations in a single response. Determine the single best SQL approach and provide only that query."
+        )
+        lines.append(
+            "   - **Avoid Combinatorial Explosions**: When performing spatial joins or nearest-neighbor queries (e.g., `ST_DWithin`, `ST_Intersects`), assume the user wants an aggregated or logically constrained result (e.g., using `GROUP BY`, `MIN`, or `LIMIT 1` per feature) rather than a massive Cartesian product of all possible matches, unless they explicitly ask for all combinations."
+        )
+        lines.append("6. **Interactive Clarification**:")
         lines.append(
             "   - If the user's request is broad or ambiguous, ask targeted clarifying questions about desired filters, threshold values, join conditions, spatial relationships, or output attributes before providing the final SQL query."
         )
@@ -212,8 +231,6 @@ class PromptDuckDBSQL:
             lines.append(f"- **Row Count**: {row_count}")
             if is_fl:
                 try:
-                    # ArcPy exposes spatialReference on feature layers at
-                    # runtime, but its type stubs do not declare it on Layer.
                     sr = getattr(lyr, "spatialReference", None)
                     if sr is not None:
                         lines.append(f"- **Spatial Reference**: {sr.name}")
@@ -281,14 +298,13 @@ class PromptDuckDBSQL:
 
         report_md = "\n".join(lines)
 
-        # Ensure directory exists
-        out_dir = arcpy.env.scratchFolder
-        import os
-
-        os.makedirs(out_dir, exist_ok=True)
-        final_path = os.path.join(out_dir, os.path.basename(output_file))
+        final_path = output_file
         if not final_path.lower().endswith(".md"):
             final_path += ".md"
+
+        out_dir = os.path.dirname(final_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
 
         with open(final_path, "w", encoding="utf-8") as f:
             f.write(report_md)
