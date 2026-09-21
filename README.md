@@ -33,8 +33,6 @@ This repository operates similarly to a web bundler for the ArcGIS toolboxes, wh
     │   │       └── tool_export.py # Another independent tool class
     │   └── utils/                 # Shared helper logic (math, parsing, API calls)
     │       └── data_conversion.py # Dynamically injected only into .pyt files that import it
-    ├── helpers/                   # Standalone scripts (Not compiled into toolboxes)
-    │   └── FeatureService_Azure_Helper.py 
     ├── tests/                     # PyTest integration tests using a dummy geodatabase
     ├── .vscode/                   # Pre-configured VS Code tasks for Conda and building
     ├── build_toolboxes.py         # The Python AST bundler script

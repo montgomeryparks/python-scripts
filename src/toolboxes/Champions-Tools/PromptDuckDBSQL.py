@@ -1,0 +1,315 @@
+import logging
+import os
+
+import arcpy
+
+from src.utils.arc_logging import setup_arcgis_logging
+
+logger = logging.getLogger("champion_tools")
+
+
+class PromptDuckDBSQL:
+    def __init__(self):
+        self.label = "Prompt DuckDB SQL"
+        self.description = (
+            "Scans all layers and tables in the active web map and produces a "
+            "Markdown report of names, schemas, data types, and distinct text "
+            "values. Intended to be pasted into an AI chat (e.g. MS365 CoPilot), "
+            "so the user can request DuckDB SQL queries to test with the "
+            "sister 'Execute DuckDB Spatial SQL' tool."
+        )
+        self.canRunInBackground = False
+
+    def getParameterInfo(self):
+        param_output = arcpy.Parameter(
+            displayName="Output Markdown File",
+            name="output_file",
+            datatype="DEFile",
+            parameterType="Required",
+            direction="Input",
+        )
+        param_output.filter.list = ["md"]
+
+        # Dynamically set default path to the project home folder or workspace directory
+        try:
+            aprx = arcpy.mp.ArcGISProject("CURRENT")
+            base_dir = aprx.homeFolder
+        except Exception:
+            base_dir = arcpy.env.workspace or arcpy.env.scratchFolder
+
+        # If the workspace is a geodatabase, step out into its parent folder
+        if base_dir and str(base_dir).lower().endswith(".gdb"):
+            base_dir = os.path.dirname(base_dir)
+
+        param_output.value = os.path.join(base_dir or "", "Prompt_DuckDB_SQL.md")
+
+        param_max_distinct = arcpy.Parameter(
+            displayName="Max Distinct Values per Text Field",
+            name="max_distinct",
+            datatype="GPLong",
+            parameterType="Optional",
+            direction="Input",
+        )
+        param_max_distinct.value = 50
+
+        return [param_output, param_max_distinct]
+
+    def updateMessages(self, parameters):
+        output_param = parameters[0]
+        max_distinct_param = parameters[1]
+
+        output_param.clearMessage()
+        max_distinct_param.clearMessage()
+
+        max_val = max_distinct_param.valueAsText
+        if max_val:
+            try:
+                v = int(max_val)
+                if v < 1 or v > 10000:
+                    max_distinct_param.setErrorMessage(
+                        "Max Distinct Values must be between 1 and 10000."
+                    )
+            except ValueError:
+                max_distinct_param.setErrorMessage(
+                    "Max Distinct Values must be a whole number."
+                )
+
+    def isLicensed(self):
+        return True
+
+    def _get_arcpy_type(self, field):
+        """Map arcpy field type to a short human-readable string."""
+        t = field.type
+        if t == "String":
+            return "TEXT"
+        if t == "SmallInteger":
+            return "SMALLINT"
+        if t == "Integer":
+            return "INTEGER"
+        if t == "Single":
+            return "FLOAT"
+        if t == "Double":
+            return "DOUBLE"
+        if t == "Date":
+            return "DATE"
+        if t == "GUID":
+            return "GUID"
+        if t == "Blob":
+            return "BLOB"
+        if t == "Raster":
+            return "RASTER"
+        if t == "Geometry":
+            return "GEOMETRY"
+        if t == "OID":
+            return "OID"
+        return t.upper() if t else "UNKNOWN"
+
+    def _sample_distinct(self, cursor_fields, rows, field_name, max_distinct):
+        """Collect up to max_distinct distinct non-null values for a field."""
+        idx = cursor_fields.index(field_name)
+        seen = set()
+        result = []
+        for row in rows:
+            val = row[idx]
+            if val is None:
+                continue
+            if hasattr(val, "isoformat"):
+                val = val.isoformat()
+            key = str(val)
+            if key not in seen:
+                seen.add(key)
+                result.append(key)
+                if len(result) >= max_distinct:
+                    break
+        return result
+
+    def execute(self, parameters, messages):
+        setup_arcgis_logging(logging.DEBUG)
+        logger.info("PromptDuckDBSQL execution started.")
+
+        arcpy.env.overwriteOutput = True
+        arcpy.SetProgressor("default", "Scanning active map layers...")
+
+        output_file = parameters[0].valueAsText
+        max_distinct = int(parameters[1].valueAsText or "50")
+
+        aprx = arcpy.mp.ArcGISProject("CURRENT")
+        active_map = aprx.activeMap
+        if not active_map:
+            logger.error("No active map found.")
+            return
+
+        layers = active_map.listLayers() + active_map.listTables()
+        if not layers:
+            logger.warning("No layers or tables found in the active map.")
+            return
+
+        lines: list[str] = []
+        lines.append("# Web Map Layer Schema Report")
+        lines.append("")
+        lines.append(
+            "This report describes every layer/table visible in the active web "
+            "map. Copy the entire contents and paste it into an AI chat (MS365 "
+            "CoPilot, Gemini, ChatGPT, etc.) along with your analytical request."
+        )
+        lines.append("")
+        lines.append("## AI Assistant Instructions & Context")
+        lines.append("")
+        lines.append(
+            "When helping the user write DuckDB SQL queries based on this report, please adhere to the following guidelines and context:"
+        )
+        lines.append("")
+        lines.append(
+            "1. **Execution Engine**: The queries will be tested and executed using the companion ArcGIS Pro tool **Execute DuckDB Spatial SQL** (`src/toolboxes/Champions-Tools/ExecuteDuckDBSQL.py`)."
+        )
+        lines.append(
+            "2. **SQL Dialect & Extensions**: Assume **DuckDB** SQL syntax with the DuckDB **Spatial Extension** already installed and loaded (`INSTALL spatial; LOAD spatial;`)."
+        )
+        lines.append("3. **Table & Column Naming Conventions**:")
+        lines.append(
+            "   - Active map layers and tables are available as tables in DuckDB."
+        )
+        lines.append(
+            "   - Table names correspond to layer/table names with spaces replaced by underscores (e.g., `My Layer Name` -> `My_Layer_Name`)."
+        )
+        lines.append(
+            "   - Spatial feature layers include a geometry column named `GEOM` (e.g., usable in spatial functions like `ST_Intersects(a.GEOM, b.GEOM)`, `ST_Within`, `ST_DWithin`)."
+        )
+        lines.append("4. **Performance & Best Practices**:")
+        lines.append(
+            "   - **Predicate Pushdown**: Always apply `WHERE` clauses where applicable to filter rows at the source, taking advantage of attribute and spatial predicate pushdown for optimal performance."
+        )
+        lines.append(
+            "   - **Selective Projection**: Select only the specific fields necessary (`SELECT col1, col2 FROM ...`) rather than `SELECT *`."
+        )
+        lines.append("5. **Strict AI Generation Rules**:")
+        lines.append(
+            "   - **One Query Only**: NEVER provide multiple SQL options or variations in a single response. Determine the single best SQL approach and provide only that query."
+        )
+        lines.append(
+            "   - **Avoid Combinatorial Explosions**: When performing spatial joins or nearest-neighbor queries (e.g., `ST_DWithin`, `ST_Intersects`), assume the user wants an aggregated or logically constrained result (e.g., using `GROUP BY`, `MIN`, or `LIMIT 1` per feature) rather than a massive Cartesian product of all possible matches, unless they explicitly ask for all combinations."
+        )
+        lines.append("6. **Interactive Clarification**:")
+        lines.append(
+            "   - If the user's request is broad or ambiguous, ask targeted clarifying questions about desired filters, threshold values, join conditions, spatial relationships, or output attributes before providing the final SQL query."
+        )
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+        total_rows_all = 0
+        total_layers = 0
+
+        for lyr in layers:
+            is_fl = getattr(lyr, "isFeatureLayer", False)
+            is_tbl = getattr(lyr, "isTable", False)
+            if not (is_fl or is_tbl):
+                continue
+
+            clean_name = lyr.name.replace(" ", "_")
+            total_layers += 1
+            arcpy.SetProgressorLabel(f"Scanning '{lyr.name}'...")
+
+            fields = [f for f in arcpy.ListFields(lyr) if f.type != "Geometry"]
+            if not fields:
+                logger.warning(f"No readable fields on '{lyr.name}'; skipping.")
+                continue
+
+            # Row count
+            try:
+                row_count = int(arcpy.GetCount_management(lyr).getOutput(0))
+            except (RuntimeError, OSError):
+                row_count = -1
+                logger.warning(f"Could not count rows for '{lyr.name}'.")
+
+            total_rows_all += max(row_count, 0)
+
+            lines.append(f"## {clean_name}")
+            lines.append("")
+            feat_type = "Feature Layer" if is_fl else "Table"
+            lines.append(f"- **Type**: {feat_type}")
+            lines.append(f"- **Row Count**: {row_count}")
+            if is_fl:
+                try:
+                    sr = getattr(lyr, "spatialReference", None)
+                    if sr is not None:
+                        lines.append(f"- **Spatial Reference**: {sr.name}")
+                except (RuntimeError, OSError):
+                    pass
+            lines.append("")
+
+            # Schema table
+            lines.append("| Field | Type | Nullable | Alias | Length |")
+            lines.append("|-------|------|----------|-------|--------|")
+            for f in fields:
+                alias = (f.aliasName or f.name).replace("|", "\\|")
+                lines.append(
+                    f"| `{f.name}` | {self._get_arcpy_type(f)} "
+                    f"| {'YES' if f.isNullable else 'NO'} "
+                    f"| {alias} "
+                    f"| {f.length or '-'} |"
+                )
+            lines.append("")
+
+            # Sample distinct text values for text fields
+            text_fields = [f.name for f in fields if f.type == "String"]
+            if text_fields:
+                lines.append("### Distinct Value Samples")
+                lines.append("")
+                cursor_fields = text_fields[:]
+                try:
+                    with arcpy.da.SearchCursor(lyr, cursor_fields) as cur:
+                        rows = list(cur)
+                    for tf in text_fields:
+                        samples = self._sample_distinct(
+                            cursor_fields, rows, tf, max_distinct
+                        )
+                        lines.append(f"**{tf}** ({len(samples)} distinct)")
+                        lines.append("")
+                        if samples:
+                            lines.append("```")
+                            for s in samples:
+                                safe = s.replace("`", "\\`")
+                                lines.append(safe)
+                            lines.append("```")
+                        else:
+                            lines.append("_no non-null values_")
+                        lines.append("")
+                except (RuntimeError, OSError) as e:
+                    logger.warning(f"Could not sample values for '{lyr.name}': {e}")
+                    lines.append("_Could not sample values._")
+                    lines.append("")
+
+            lines.append("---")
+            lines.append("")
+
+        # Summary
+        lines.append("## Summary")
+        lines.append("")
+        lines.append(f"- **Layers/Tables scanned**: {total_layers}")
+        lines.append(f"- **Total rows (approx.)**: {total_rows_all}")
+        lines.append("")
+        lines.append(
+            "Use this report with the **Execute DuckDB Spatial SQL** tool by "
+            "pasting the schema info into an AI chat and asking for the SQL you "
+            "need."
+        )
+        lines.append("")
+
+        report_md = "\n".join(lines)
+
+        final_path = output_file
+        if not final_path.lower().endswith(".md"):
+            final_path += ".md"
+
+        out_dir = os.path.dirname(final_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+
+        with open(final_path, "w", encoding="utf-8") as f:
+            f.write(report_md)
+
+        arcpy.AddMessage(f"Markdown report written to: {final_path}")
+        logger.info(f"Report saved to {final_path}")
+        arcpy.SetProgressorLabel("Done.")
+        arcpy.ResetProgressor()
