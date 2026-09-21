@@ -16,14 +16,16 @@ class ArcGISLogHandler(logging.Handler):
 
 def setup_arcgis_logging(level=logging.DEBUG):
     """Configures the root logger to send all messages to ArcGIS."""
-    root_logger = logging.getLogger()  # Empty string gets the Root Logger
+    root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
-    # Avoid adding duplicate handlers if the script runs multiple times
-    if not any(isinstance(h, ArcGISLogHandler) for h in root_logger.handlers):
-        handler = ArcGISLogHandler()
-        # Optional: Add a formatter to include timestamps/levels
-        formatter = logging.Formatter("%(levelname)s: %(message)s")
-        handler.setFormatter(formatter)
+    # Remove existing handlers by class string name to survive ArcGIS module reloads
+    for h in root_logger.handlers[:]:
+        if type(h).__name__ == "ArcGISLogHandler":
+            root_logger.removeHandler(h)
 
-        root_logger.addHandler(handler)
+    handler = ArcGISLogHandler()
+    formatter = logging.Formatter("%(levelname)s: %(message)s")
+    handler.setFormatter(formatter)
+
+    root_logger.addHandler(handler)

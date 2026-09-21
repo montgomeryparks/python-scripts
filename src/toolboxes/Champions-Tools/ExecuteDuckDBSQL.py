@@ -134,7 +134,18 @@ class ExecuteDuckDBSQL:
                         f"Could not load active map layer schemas for SQL validation: {exc}"
                     )
 
-                con.execute(f"PREPARE v1 AS {query}")
+                # Use CREATE TEMP TABLE to validate syntax, duplicate columns, and schemas
+                con.execute(f"CREATE TEMP TABLE _val_check AS {query}")
+
+                # Check for multiple geometry columns
+                col_info = con.execute("PRAGMA table_info('_val_check')").fetchall()
+                geom_cols = [c[1] for c in col_info if c[2] == "GEOMETRY"]
+                if len(geom_cols) > 1:
+                    target_param = file_param if sql_file else query_param
+                    target_param.setErrorMessage(
+                        f"SQL Error: Multiple geometry columns returned ({', '.join(geom_cols)}). ArcGIS only supports one geometry field."
+                    )
+
             except (duckdb.Error, OSError, RuntimeError) as e:
                 err_msg = str(e)
                 clean_msg = (
@@ -146,6 +157,7 @@ class ExecuteDuckDBSQL:
                     "Parser Error" in err_msg
                     or "syntax error" in err_msg.lower()
                     or "Binder Error" in err_msg
+                    or "duplicate column name" in err_msg.lower()
                 ):
                     target_param = file_param if sql_file else query_param
                     target_param.setErrorMessage(f"SQL Error: {clean_msg}")
@@ -156,7 +168,6 @@ class ExecuteDuckDBSQL:
         logger.info("DuckDB tool execution started.")
 
         arcpy.env.overwriteOutput = True
-
         arcpy.SetProgressor("default", "Initializing tool and validating inputs...")
 
         query_text = parameters[0].valueAsText
@@ -202,6 +213,7 @@ class ExecuteDuckDBSQL:
 
         layer_field_map = {}
         referenced_layers = []
+        oid_mapping = {}
 
         for lyr in active_map.listLayers() + active_map.listTables():
             if getattr(lyr, "isFeatureLayer", False) or getattr(lyr, "isTable", False):
@@ -214,6 +226,13 @@ class ExecuteDuckDBSQL:
                         if f.type not in ("Geometry", "Raster", "Blob")
                     ]
                     referenced_layers.append((clean_name, lyr))
+
+                    # Track OID fields and their sizes for exact typing reconstruction
+                    desc = arcpy.Describe(lyr)
+                    if hasattr(desc, "OIDFieldName"):
+                        oid_name = desc.OIDFieldName.lower()
+                        is_64bit = getattr(desc, "hasOID64", False)
+                        oid_mapping[oid_name] = is_64bit
 
         pushdown_filters = extract_where_clauses(query, layer_field_map)
 
@@ -348,8 +367,8 @@ class ExecuteDuckDBSQL:
             col_name = col[1]
             col_type = col[2]
             if col_type == "GEOMETRY":
-                select_cols.append(f'ST_AsWKB("{col_name}") AS "{col_name}"')
                 spatial_cols.append(col_name)
+                select_cols.append(f'ST_AsWKB("{col_name}") AS "{col_name}"')
             else:
                 select_cols.append(f'"{col_name}"')
 
@@ -372,8 +391,35 @@ class ExecuteDuckDBSQL:
 
         arcpy.management.Delete(out_path)
 
+        # Strip whitespace from returned columns to prevent invisible naming mismatches
+        res_df.columns = res_df.columns.str.strip()
+
         spatial_ref = active_map.spatialReference
-        shape_col = spatial_cols[0] if spatial_cols else None
+        shape_col = spatial_cols[0].strip() if spatial_cols else None
+
+        # Resolve table-prefixed fields and identify OID fields for renaming
+        rename_map = {}
+        for col in res_df.columns:
+            # DuckDB sometimes retains table aliases (e.g. "assets.OBJECTID"). Strip to base name.
+            base_col = col.split(".")[-1]
+            base_col_lower = base_col.lower()
+
+            # Identify if the base column name is an intrinsic OID or matches the map schemas
+            if (
+                base_col_lower in ["objectid", "fid", "oid"]
+                or base_col_lower in oid_mapping
+            ) and col != shape_col:
+                rename_map[col] = f"{base_col.upper()}_RESULT"
+                # Emit warning instead of info for the renaming action
+                logger.warning(
+                    f"Renaming intrinsic OID field '{col}' to '{rename_map[col]}' to avoid Geodatabase conflict."
+                )
+            elif "." in col and col != shape_col:
+                # Replace dots with underscores to prevent ArcGIS from implicitly stripping the prefix
+                rename_map[col] = col.replace(".", "_")
+
+        if rename_map:
+            res_df = res_df.rename(columns=rename_map)
 
         duckdb_geom_map: dict[
             str, Literal["POINT", "MULTIPOINT", "POLYGON", "POLYLINE"]
@@ -414,7 +460,21 @@ class ExecuteDuckDBSQL:
         attribute_cols = [c for c in res_df.columns if c != shape_col]
 
         for col in attribute_cols:
-            field_type = map_pandas_dtype_to_arcpy(res_df[col].dtype)
+            # Revert back to original name to identify OID size
+            original_col = next((k for k, v in rename_map.items() if v == col), col)
+            original_base_lower = original_col.split(".")[-1].lower()
+
+            # Map input OIDs to accurate ArcGIS integer types based on origin 32/64-bit size
+            if original_base_lower in oid_mapping:
+                field_type = (
+                    "BIGINTEGER" if oid_mapping[original_base_lower] else "LONG"
+                )
+                logger.info(
+                    f"Mapped intrinsic OID field {original_col} to {field_type} as {col}"
+                )
+            else:
+                field_type = map_pandas_dtype_to_arcpy(res_df[col].dtype)
+
             arcpy.management.AddField(
                 out_path,
                 col,
