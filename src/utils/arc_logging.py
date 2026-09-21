@@ -15,17 +15,18 @@ class ArcGISLogHandler(logging.Handler):
 
 
 def setup_arcgis_logging(level=logging.DEBUG):
-    """Configures the root logger to send all messages to ArcGIS."""
-    root_logger = logging.getLogger()
-    root_logger.setLevel(level)
+    """Configures a named logger to send messages to ArcGIS, avoiding duplicates."""
+    logger = logging.getLogger("champion_tools")
+    logger.setLevel(level)
 
-    # Remove existing handlers by class string name to survive ArcGIS module reloads
-    for h in root_logger.handlers[:]:
-        if type(h).__name__ == "ArcGISLogHandler":
-            root_logger.removeHandler(h)
+    # CRITICAL: Stop messages from bubbling up to the polluted global root logger
+    logger.propagate = False
+
+    # Wipe any existing handlers from previous runs in the persistent Pro session
+    logger.handlers.clear()
 
     handler = ArcGISLogHandler()
     formatter = logging.Formatter("%(levelname)s: %(message)s")
     handler.setFormatter(formatter)
 
-    root_logger.addHandler(handler)
+    logger.addHandler(handler)

@@ -19,7 +19,7 @@ from src.utils.sql import (
     sanitize_where_clause,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("champion_tools")
 
 
 class ExecuteDuckDBSQL:
@@ -45,7 +45,7 @@ class ExecuteDuckDBSQL:
             parameterType="Optional",
             direction="Input",
         )
-        param_sql_file.filter.list = ["sql", "txt"]  # pyright: ignore[reportOptionalMemberAccess]
+        param_sql_file.filter.list = ["sql", "txt"]
 
         param_output_name = arcpy.Parameter(
             displayName="Output Dataset Name",
@@ -70,7 +70,6 @@ class ExecuteDuckDBSQL:
         return True
 
     def updateMessages(self, parameters):
-        """Provides real-time SQL syntax and schema validation before execution."""
         query_param = parameters[0]
         file_param = parameters[1]
 
@@ -129,15 +128,11 @@ class ExecuteDuckDBSQL:
                                     con.execute(
                                         f"CREATE TABLE {clean_name} ({', '.join(fields)})"
                                     )
-                except (OSError, RuntimeError, duckdb.Error) as exc:
-                    logger.warning(
-                        f"Could not load active map layer schemas for SQL validation: {exc}"
-                    )
+                except (OSError, RuntimeError, duckdb.Error):
+                    pass
 
-                # Use CREATE TEMP TABLE to validate syntax, duplicate columns, and schemas
                 con.execute(f"CREATE TEMP TABLE _val_check AS {query}")
 
-                # Check for multiple geometry columns
                 col_info = con.execute("PRAGMA table_info('_val_check')").fetchall()
                 geom_cols = [c[1] for c in col_info if c[2] == "GEOMETRY"]
                 if len(geom_cols) > 1:
@@ -163,7 +158,11 @@ class ExecuteDuckDBSQL:
                     target_param.setErrorMessage(f"SQL Error: {clean_msg}")
 
     def execute(self, parameters, messages):
-        setup_arcgis_logging(logging.DEBUG)
+        if not logger.handlers and not logging.getLogger().handlers:
+            setup_arcgis_logging(logging.DEBUG)
+        else:
+            logger.handlers.clear()
+            setup_arcgis_logging(logging.DEBUG)
 
         logger.info("DuckDB tool execution started.")
 
@@ -227,7 +226,6 @@ class ExecuteDuckDBSQL:
                     ]
                     referenced_layers.append((clean_name, lyr))
 
-                    # Track OID fields and their sizes for exact typing reconstruction
                     desc = arcpy.Describe(lyr)
                     if hasattr(desc, "OIDFieldName"):
                         oid_name = desc.OIDFieldName.lower()
@@ -236,10 +234,8 @@ class ExecuteDuckDBSQL:
 
         pushdown_filters = extract_where_clauses(query, layer_field_map)
 
-        # Sort layers so those with explicit WHERE clauses load first (driving layers)
         referenced_layers.sort(key=lambda x: 0 if pushdown_filters.get(x[0], "") else 1)
 
-        # Check if the query implies spatial predicate pushdown is beneficial
         build_dynamic_extent = bool(
             re.search(
                 r"\bST_(Intersects|Within|Contains|Crosses|Touches|Overlaps|DWithin)\b",
@@ -249,7 +245,6 @@ class ExecuteDuckDBSQL:
         )
         cumulative_extent = None
 
-        # Respect explicit arcpy.env.extent bounding box constraints if the user set them
         env_ext = arcpy.env.extent
         if not isinstance(env_ext, str) and env_ext and env_ext.XMin is not None:
             cumulative_extent = arcpy.Polygon(
@@ -269,6 +264,12 @@ class ExecuteDuckDBSQL:
 
             raw_filter = pushdown_filters.get(clean_name, "")
             cursor_where = sanitize_where_clause(lyr, raw_filter)
+
+            if cursor_where:
+                logger.info(
+                    f"Applying native Geodatabase filter to {clean_name}: {cursor_where}"
+                )
+
             layer_fields = layer_field_map[clean_name]
             selected_field_names = get_referenced_fields(query, layer_fields)
 
@@ -290,7 +291,6 @@ class ExecuteDuckDBSQL:
                 )
                 df = _norm(df, df.columns)
 
-                # If this layer acts as a driving layer (has a WHERE clause), aggregate its bounding box
                 if (
                     build_dynamic_extent
                     and cursor_where
@@ -372,6 +372,12 @@ class ExecuteDuckDBSQL:
             else:
                 select_cols.append(f'"{col_name}"')
 
+        if len(spatial_cols) > 1:
+            logger.error(
+                f"SQL Error: Multiple geometry columns returned ({', '.join(spatial_cols)}). ArcGIS only supports one geometry field per dataset."
+            )
+            return
+
         final_query = f"SELECT {', '.join(select_cols)} FROM _user_result"
         res_df = con.execute(final_query).df()
 
@@ -391,31 +397,25 @@ class ExecuteDuckDBSQL:
 
         arcpy.management.Delete(out_path)
 
-        # Strip whitespace from returned columns to prevent invisible naming mismatches
         res_df.columns = res_df.columns.str.strip()
 
         spatial_ref = active_map.spatialReference
         shape_col = spatial_cols[0].strip() if spatial_cols else None
 
-        # Resolve table-prefixed fields and identify OID fields for renaming
         rename_map = {}
         for col in res_df.columns:
-            # DuckDB sometimes retains table aliases (e.g. "assets.OBJECTID"). Strip to base name.
             base_col = col.split(".")[-1]
             base_col_lower = base_col.lower()
 
-            # Identify if the base column name is an intrinsic OID or matches the map schemas
             if (
                 base_col_lower in ["objectid", "fid", "oid"]
                 or base_col_lower in oid_mapping
             ) and col != shape_col:
                 rename_map[col] = f"{base_col.upper()}_RESULT"
-                # Emit warning instead of info for the renaming action
                 logger.warning(
                     f"Renaming intrinsic OID field '{col}' to '{rename_map[col]}' to avoid Geodatabase conflict."
                 )
             elif "." in col and col != shape_col:
-                # Replace dots with underscores to prevent ArcGIS from implicitly stripping the prefix
                 rename_map[col] = col.replace(".", "_")
 
         if rename_map:
@@ -460,17 +460,12 @@ class ExecuteDuckDBSQL:
         attribute_cols = [c for c in res_df.columns if c != shape_col]
 
         for col in attribute_cols:
-            # Revert back to original name to identify OID size
             original_col = next((k for k, v in rename_map.items() if v == col), col)
             original_base_lower = original_col.split(".")[-1].lower()
 
-            # Map input OIDs to accurate ArcGIS integer types based on origin 32/64-bit size
             if original_base_lower in oid_mapping:
                 field_type = (
                     "BIGINTEGER" if oid_mapping[original_base_lower] else "LONG"
-                )
-                logger.info(
-                    f"Mapped intrinsic OID field {original_col} to {field_type} as {col}"
                 )
             else:
                 field_type = map_pandas_dtype_to_arcpy(res_df[col].dtype)

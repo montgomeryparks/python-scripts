@@ -4,7 +4,7 @@ import arcpy
 
 from src.utils.arc_logging import setup_arcgis_logging
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("champion_tools")
 
 
 class PromptDuckDBSQL:
