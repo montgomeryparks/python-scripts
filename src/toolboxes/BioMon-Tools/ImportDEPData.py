@@ -332,7 +332,6 @@ class ImportBioMonDEPExcel:
             # -----------------------------------------------------------------
             arcpy.SetProgressorLabel("Reading Excel sheets into DuckDB...")
 
-            # Create empty base tables to UNION into
             con.execute("""
                 CREATE OR REPLACE TABLE raw_benthics_counts (SOURCE_FILE VARCHAR, STATION VARCHAR, VISIT_DATE DATE, BC_TAXA VARCHAR, INDIVIDUALS INT, TRAYS INT, GRIDS INT);
                 CREATE OR REPLACE TABLE raw_fish_counts (SOURCE_FILE VARCHAR, STATION VARCHAR, VISIT_DATE DATE, FC_SPECIES VARCHAR, PASS_1 INT, PASS_2 INT, TOTAL_COUNT INT, TOTAL_ANOMALIES INT, ANOMALIES VARCHAR, row_num INT);
@@ -1059,9 +1058,10 @@ class ImportBioMonDEPExcel:
                         )
 
             if has_validation_errors:
-                raise arcpy.ExecuteError(
+                arcpy.AddError(
                     "Import failed due to one or more data validation errors detected during processing."
                 )
+                return
 
         except Exception as e:
             err_trace = traceback.format_exc()
@@ -1094,7 +1094,8 @@ class ImportBioMonDEPExcel:
             except (duckdb.Error, RuntimeError, ValueError) as mem_err:
                 logger.error(f"Could not write error state to memory: {mem_err}")
 
-            raise arcpy.ExecuteError(f"Import failed: {e}")
+            arcpy.AddError(f"Import failed: {e}")
+            return
 
         arcpy.SetProgressorPosition(6)
         arcpy.ResetProgressor()
