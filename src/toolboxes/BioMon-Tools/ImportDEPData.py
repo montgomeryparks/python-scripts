@@ -977,8 +977,32 @@ class ImportBioMonDEPExcel:
                 if preview_outputs:
                     parameters[2].value = preview_outputs
                     if has_validation_errors:
+                        # Count the specific errors to tell the user exactly where to look
+                        upd_errs = con.execute(
+                            "SELECT COUNT(*) FROM visits WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
+                        ).fetchone()[0]
+                        ins_errs = con.execute(
+                            "SELECT COUNT(*) FROM visits WHERE GlobalID IS NULL AND IMPORT_STATUS = 'ERROR'"
+                        ).fetchone()[0]
+
+                        err_details = []
+                        if path_v_upd:
+                            err_details.append(
+                                f"preview_visits_update: {upd_errs} error(s)"
+                            )
+                        if path_v_ins:
+                            err_details.append(
+                                f"preview_visits_insert: {ins_errs} error(s)"
+                            )
+                        if path_fc_upd:
+                            err_details.append("preview_fish_counts_update: 0 error(s)")
+                        if path_fc_ins:
+                            err_details.append("preview_fish_counts_insert: 0 error(s)")
+
+                        details_str = "\n - ".join(err_details)
                         logger.warning(
-                            f"Validation complete. Please review the {len(preview_outputs)} preview dataset(s) in the active map for highlighted schema or domain errors."
+                            f"Validation complete. Please review the {len(preview_outputs)} preview dataset(s) in the active map for highlighted schema or domain errors:\n"
+                            f" - {details_str}"
                         )
                     else:
                         logger.info(
