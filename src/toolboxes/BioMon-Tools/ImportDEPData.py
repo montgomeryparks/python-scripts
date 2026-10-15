@@ -1,864 +1,833 @@
-# %%
-import json
-import math
+import logging
+import os
 
 import arcpy
 import duckdb
 import pandas as pd
-import requests
-import urllib3
-from shapely.geometry import shape
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from src.utils.arc_logging import setup_arcgis_logging
+from src.utils.auth import get_portal_token
+from src.utils.constants import URL_BIOMON_EDIT_FS, URL_BIOMON_STATIONS
+from src.utils.data_conversion import (
+    df_to_esri_features,
+    featureservice_to_df,
+    run_apply_edits,
+)
 
+logger = logging.getLogger("biomon_tools")
 
-def featureservice_to_df(
-    url: str,
-    out_fields: list[str] | str = "*",
-    where: str = "1=1",
-    out_sr: int = 2248,
-    token: str = "",
-) -> pd.DataFrame:
-    base_url = url.rstrip("/")
-    query_url = f"{base_url}/query"
-    base_params = {"f": "json"}
-    if token:
-        base_params["token"] = token
+LAYERS = {
+    "visits": 0,
+    "fish_counts": 2,
+}
 
-    access_resp = requests.get(base_url, params=base_params, verify=False)
-    access_resp.raise_for_status()
-    access_data = access_resp.json()
-    if "error" in access_data:
-        err = access_data["error"]
-        if err.get("code") == 499 and not token:
-            try:
-                token = arcpy.GetSigninToken().get("token", "")
-                if token:
-                    base_params["token"] = token
-            except Exception:
-                pass
+DEFAULT_WKID = 2248
 
-    meta_resp = requests.get(base_url, params=base_params, verify=False)
-    meta_resp.raise_for_status()
-    meta_data = meta_resp.json()
-    if "error" in meta_data:
-        raise Exception(
-            f"ArcGIS Error getting metadata for {base_url}: {meta_data['error'].get('message', meta_data['error'])}"
-        )
-    max_record_count = meta_data.get("maxRecordCount", 1000)
-
-    count_params = {**base_params, "where": where, "returnCountOnly": "true"}
-    count_resp = requests.get(query_url, params=count_params, verify=False)
-    count_resp.raise_for_status()
-    count_data = count_resp.json()
-    if "error" in count_data:
-        raise Exception(
-            f"ArcGIS Error getting count for {base_url}: {count_data['error'].get('message', count_data['error'])}"
-        )
-    total_records = count_data.get("count", 0)
-
-    arcpy.AddMessage(
-        f"Total records to fetch: {total_records} (Page size: {max_record_count})"
-    )
-
-    all_features = []
-    offset = 0
-
-    while offset < total_records:
-        fetch_params = {
-            "where": where,
-            "outFields": ",".join(out_fields)
-            if isinstance(out_fields, list)
-            else out_fields,
-            "outSR": out_sr,
-            "f": "geojson",
-            "resultOffset": offset,
-            "resultRecordCount": max_record_count,
-        }
-        if token:
-            fetch_params["token"] = token
-
-        response = requests.get(query_url, params=fetch_params, verify=False)
-        response.raise_for_status()
-        data = response.json()
-
-        if "error" in data:
-            err_msg = data["error"].get("message") or str(data["error"])
-            raise Exception(f"ArcGIS Error querying {query_url}: {err_msg}")
-
-        features = data.get("features", [])
-        if not features:
-            break
-
-        all_features.extend(features)
-        offset += max_record_count
-
-    if not all_features:
-        return pd.DataFrame()
-
-    rows = []
-    for feat in all_features:
-        props = feat.get("properties", {})
-        geom_dict = feat.get("geometry", None)
-        if geom_dict:
-            props["GEOMWKB"] = shape(geom_dict).wkb if geom_dict else None
-        rows.append(props)
-
-    return pd.DataFrame(rows)
+# Expected sheets and their required columns (validated case-insensitively)
+REQUIRED_SCHEMA: dict[str, list[str]] = {
+    "Benthics": [
+        "STATION",
+        "DATE",
+        "TAXA",
+        "#INDVS",
+        "trays",
+        "#GRIDS",
+    ],
+    "Fish": [
+        "STATION",
+        "SAMPLE_DATE",
+        "SPECIES",
+        "PASS1",
+        "PASS2",
+        "ANOMALIES",
+        "ANOMALIES_TYPE",
+    ],
+    "PhysChem": [
+        "STATION",
+        "SAMPLE_DATE",
+        "MON_TYPE",
+        "AIRTEMP",
+        "H2OTEMP_C",
+        "PH",
+        "DISOXY",
+        "%_SAT",
+        "CONDUCT",
+        "Turbidity",
+        "MonitoringTime",
+        "COMMENTS",
+    ],
+    "Rhab": [
+        "STATION",
+        "SAMPLE_DATE",
+        "MON_TYPE",
+        "INSTR_COVER",
+        "EPI_SUBSTR",
+        "EMBEDD",
+        "CH_ALTER",
+        "SED_DEPOSIT",
+        "RIFFLE_FREQ",
+        "CHAN_FLOW",
+        "LB_BANKVEG",
+        "RB_BANKVEG",
+        "LB_BANKSTAB",
+        "RB_BANKSTAB",
+        "LB_BUFFER",
+        "RB_BUFFER",
+        "COMMENTS",
+    ],
+}
 
 
-def get_portal_token():
+def validate_excel_schema(xlsx_path: str) -> list[str]:
+    """
+    Validates that the Excel workbook contains all required sheets and that
+    each sheet contains all required columns. Returns a list of error messages.
+    """
+    errors: list[str] = []
     try:
-        t = arcpy.GetSigninToken()
-        if isinstance(t, dict):
-            return t.get("token", "")
-    except Exception:
-        pass
-    return ""
+        excel_file = pd.ExcelFile(xlsx_path)
+    except PermissionError:
+        return [
+            "Permission denied: The Excel workbook is currently open or locked. Please close it and try again."
+        ]
+    except (OSError, ValueError, RuntimeError) as e:
+        return [f"Could not read Excel workbook: {e}"]
 
+    sheet_names_str = [str(s) for s in excel_file.sheet_names]
+    actual_sheets = set(sheet_names_str)
+    missing_sheets = set(REQUIRED_SCHEMA.keys()) - actual_sheets
 
-def df_to_esri_features(
-    df, has_geometry=True, is_update=False, id_field="GlobalID", wkid=2248
-):
-    drop_cols = {"GEOM", "geom", "GEOMWKB", "row_num", "x", "y"}
-    features = []
-
-    for _, row in df.iterrows():
-        attributes = {}
-        for col, val in row.items():
-            if not is_update and col.lower() in {id_field.lower(), "globalid"}:
-                continue
-            if col in drop_cols:
-                continue
-
-            if (
-                pd.isna(val)
-                or val is None
-                or (isinstance(val, float) and math.isnan(val))
-            ):
-                attributes[col] = None
-
-            # Rely on pd.Timestamp and string class names to avoid import conflicts
-            elif isinstance(val, pd.Timestamp) or type(val).__name__ in (
-                "date",
-                "datetime",
-                "Timestamp",
-            ):
-                try:
-                    # pd.Timestamp universally handles dates, datetimes, and pandas timestamps
-                    ts = pd.Timestamp(val)
-                    attributes[col] = int(ts.timestamp() * 1000)
-                except Exception:
-                    attributes[col] = str(val)
-            else:
-                if hasattr(val, "item"):
-                    val = val.item()
-                attributes[col] = val
-
-        feat = {"attributes": attributes}
-
-        if has_geometry and not is_update and "x" in row and "y" in row:
-            x_val, y_val = row["x"], row["y"]
-            if not pd.isna(x_val) and not pd.isna(y_val):
-                feat["geometry"] = {
-                    "x": float(x_val) if not hasattr(x_val, "item") else x_val.item(),
-                    "y": float(y_val) if not hasattr(y_val, "item") else y_val.item(),
-                    "spatialReference": {"wkid": wkid},
-                }
-
-        features.append(feat)
-
-    return features
-
-
-def run_apply_edits(url, layer_id, features, token="", is_update=False, chunk_size=500):
-    if not features:
-        return []
-    edits_url = f"{url.rstrip('/')}/{layer_id}/applyEdits"
-    all_results = []
-    for i in range(0, len(features), chunk_size):
-        chunk = features[i : i + chunk_size]
-        # useGlobalIds must be true for updates, false for inserts
-        data = {
-            "f": "json",
-            "rollbackOnFailure": "true",
-            "useGlobalIds": "true" if is_update else "false",
-        }
-        if token:
-            data["token"] = token
-        if is_update:
-            data["updates"] = json.dumps(chunk)
-            action_name = "Update"
-        else:
-            data["adds"] = json.dumps(chunk)
-            action_name = "Add"
-        resp = requests.post(edits_url, data=data, verify=False)
-        resp.raise_for_status()
-        res_json = resp.json()
-        if "error" in res_json:
-            raise Exception(
-                f"ArcGIS applyEdits Error (Layer {layer_id}): {res_json['error']}"
-            )
-        results_key = "updateResults" if is_update else "addResults"
-        results = res_json.get(results_key, [])
-        failed = sum(1 for r in results if not r.get("success", False))
-        if failed > 0:
-            errs = [r.get("error") for r in results if not r.get("success", False)]
-            raise Exception(
-                f"applyEdits {action_name} failed for {failed}/{len(chunk)} features in Layer {layer_id}: {errs}"
-            )
-        print(
-            f"Layer {layer_id} batch {i // chunk_size + 1}: Successfully {action_name.lower()}ed {len(chunk)} features."
+    if missing_sheets:
+        errors.append(
+            f"Missing required sheet(s): {', '.join(sorted(missing_sheets))} "
+            f"(Found sheets: {', '.join(sheet_names_str)})"
         )
-        all_results.extend(results)
-    return all_results
+
+    for sheet_name, req_cols in REQUIRED_SCHEMA.items():
+        if sheet_name not in actual_sheets:
+            continue
+        try:
+            df_header = pd.read_excel(xlsx_path, sheet_name=sheet_name, nrows=0)
+            actual_cols_upper = {str(col).strip().upper() for col in df_header.columns}
+            missing_cols = [
+                col for col in req_cols if col.upper() not in actual_cols_upper
+            ]
+            if missing_cols:
+                errors.append(
+                    f"Sheet '{sheet_name}' is missing required field(s): {', '.join(missing_cols)}"
+                )
+        except (OSError, ValueError, KeyError, RuntimeError) as e:
+            errors.append(f"Error inspecting columns in sheet '{sheet_name}': {e}")
+
+    return errors
 
 
-con = duckdb.connect()
-con.sql("INSTALL spatial; LOAD spatial;")
+def _refresh_visits_existing(con: duckdb.DuckDBPyConnection, token: str) -> None:
+    """Fetches the current Visits layer from the Feature Service and rebuilds visits_existing in DuckDB."""
+    df_visits = featureservice_to_df(
+        f"{URL_BIOMON_EDIT_FS}/{LAYERS['visits']}",
+        out_fields=["GlobalID", "STATION", "VISIT_TYPE", "VISIT_DATE", "DATA_NOTES"],
+        token=token,
+    )
+    if not df_visits.empty:
+        con.register("df_visits", df_visits)
+        con.execute("""
+            CREATE OR REPLACE TABLE visits_existing AS
+            SELECT
+                * EXCLUDE (GEOMWKB, VISIT_DATE)
+                ,CAST(epoch_ms(VISIT_DATE::BIGINT)::DATE AS TIMESTAMP) + INTERVAL 12 HOUR AS VISIT_DATE
+                ,ST_GeomFromWKB(GEOMWKB) AS geom
+            FROM df_visits;
+        """)
+    else:
+        con.execute("""
+            CREATE OR REPLACE TABLE visits_existing (
+                GlobalID VARCHAR,
+                STATION VARCHAR,
+                VISIT_TYPE VARCHAR,
+                VISIT_DATE TIMESTAMP,
+                DATA_NOTES VARCHAR,
+                geom GEOMETRY
+            );
+        """)
 
 
-# %%
-# Load existing data to insert/update visits
-token = get_portal_token()
-df_stations = featureservice_to_df(
-    "https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/Biological_Monitoring/FeatureServer/0",
-    out_fields=["STATION"],
-    token=token,
-)
+class ImportBioMonDEPExcel:
+    def __init__(self):
+        self.label = "Import MCDEP Biological Monitoring Excel"
+        self.description = (
+            "Ingests an MCDEP Biological Monitoring data exchange Excel workbook (.xlsx) "
+            "(Benthics, Fish, PhysChem, and Rhab sheets) and upserts Visit and Fish Count "
+            "records into the hosted BioMon_EDIT Feature Service."
+        )
+        self.canRunInBackground = False
 
-df_visits = featureservice_to_df(
-    "https://services1.arcgis.com/HbzrdBZjOwNHp70P/ArcGIS/rest/services/BioMon_EDIT/FeatureServer/0",
-    out_fields=["GlobalID", "STATION", "VISIT_TYPE", "VISIT_DATE", "DATA_NOTES"],
-    token=token,
-)
+    def getParameterInfo(self):
+        param_xlsx = arcpy.Parameter(
+            displayName="Input BioMon Excel File (.xlsx)",
+            name="in_excel_file",
+            datatype="DEFile",
+            parameterType="Required",
+            direction="Input",
+        )
+        param_xlsx.filter.list = ["xlsx"]  # pyright: ignore[reportOptionalMemberAccess]
 
-sql = """
-CREATE OR REPLACE TABLE stations AS
-SELECT
-    * EXCLUDE (GEOMWKB)
-    ,ST_GeomFromWKB(GEOMWKB) AS geom
-FROM df_stations;
+        return [param_xlsx]
 
-CREATE OR REPLACE TABLE visits_existing AS
-SELECT
-    * EXCLUDE (GEOMWKB, VISIT_DATE)
-    ,CAST(epoch_ms(VISIT_DATE::BIGINT)::DATE AS TIMESTAMP) + INTERVAL 12 HOUR AS VISIT_DATE
-    ,ST_GeomFromWKB(GEOMWKB) AS geom
-FROM df_visits;
-"""
+    def isLicensed(self):
+        return True
 
-con.sql(sql)
+    def updateParameters(self, parameters):
+        return
 
-# %%
-# target_file = r"C:\Users\carter.hughes\OneDrive - The Maryland-National Capital Park and Planning Commission\MCP - Data Analytics WHQ\Projects\PPSD\Resource Analysis\Biological Monitoring\MCDEP\Data Exchange\20240805_Gauza_SCSC204A.xlsx"
-"""
-PhysChem
-MON_TYPE field present
+    def updateMessages(self, parameters):
+        param_xlsx = parameters[0]
+        param_xlsx.clearMessage()
 
-Rhab
-MON_TYPE field absent
-"""
+        xlsx_path = param_xlsx.valueAsText
+        if not xlsx_path:
+            return
 
-# target_file = r"C:\Users\carter.hughes\OneDrive - The Maryland-National Capital Park and Planning Commission\MCP - Data Analytics WHQ\Projects\PPSD\Resource Analysis\Biological Monitoring\MCDEP\Data Exchange\20260429_Gauza_Crystal Rock.xlsx"
-"""
-PhysChem
-MON_TYPE field absent
+        if not os.path.exists(xlsx_path):
+            param_xlsx.setErrorMessage("The specified Excel file does not exist.")
+            return
 
-Rhab
-MON_TYPE field absent
-"""
+        if not xlsx_path.lower().endswith(".xlsx"):
+            param_xlsx.setErrorMessage("Input file must be an .xlsx workbook.")
+            return
 
-# target_file = r"C:\Users\carter.hughes\OneDrive - The Maryland-National Capital Park and Planning Commission\MCP - Data Analytics WHQ\Projects\PPSD\Resource Analysis\Biological Monitoring\MCDEP\Data Exchange\20260724_Gauza_Paint Branch.xlsx"
-"""
-PhysChem
-MON_TYPE field absent
+        schema_errors = validate_excel_schema(xlsx_path)
+        if schema_errors:
+            formatted_errors = "\n - ".join(schema_errors)
+            param_xlsx.setErrorMessage(
+                f"Excel Schema Validation Failed:\n - {formatted_errors}"
+            )
 
-Rhab
-MON_TYPE field absent
-"""
+    def execute(self, parameters, messages):
+        if not logger.handlers and not logging.getLogger().handlers:
+            setup_arcgis_logging(logging.DEBUG, "biomon_tools")
+        else:
+            logger.handlers.clear()
+            setup_arcgis_logging(logging.DEBUG, "biomon_tools")
 
-target_file = r"C:\Users\carter.hughes\OneDrive - The Maryland-National Capital Park and Planning Commission\MCP - Data Analytics WHQ\Projects\PPSD\Resource Analysis\Biological Monitoring\MCDEP\Data Exchange\20260915_Gauza_Little Falls.xlsx"
-"""
-PhysChem
-MON_TYPE field present
+        target_file = parameters[0].valueAsText
+        safe_target_file = target_file.replace("\\", "/")
 
-Rhab
-MON_TYPE field present
-"""
+        logger.info(f"Starting Biological Monitoring data import for: {target_file}")
+        arcpy.SetProgressor(
+            "step", "Validating Excel schema and initializing...", 0, 6, 1
+        )
 
+        schema_errors = validate_excel_schema(target_file)
+        if schema_errors:
+            for err in schema_errors:
+                logger.error(f"Schema Validation Error: {err}")
+            raise arcpy.ExecuteError(
+                "Execution halted due to missing required sheets or fields in the input Excel workbook."
+            )
 
-sql = f'''
-CREATE OR REPLACE TABLE raw_benthics_counts AS
-SELECT
-    TRIM(STATION::VARCHAR) AS STATION
-    ,(CAST('1899-12-30' AS DATE) + CAST(FLOOR(CAST("DATE" AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
-    ,REPLACE(LOWER(TAXA::VARCHAR), 'none', 'no benthics observed') AS BC_TAXA
-    
-    ,NULLIF("#INDVS", 'NULL')::INT AS INDIVIDUALS
-    ,NULLIF(trays, 'NULL')::INT AS TRAYS
-    ,NULLIF("#GRIDS", 'NULL')::INT AS GRIDS
-    
-FROM read_xlsx("{target_file}", sheet="Benthics", all_varchar = true);
+        # -----------------------------------------------------------------
+        # STEP 1: Authentication & DuckDB Initialization
+        # -----------------------------------------------------------------
+        arcpy.SetProgressorLabel(
+            "Authenticating with ArcGIS Portal & initializing DuckDB..."
+        )
+        token = get_portal_token()
+        if not token:
+            logger.warning(
+                "No ArcGIS Pro portal token detected. Proceeding with anonymous request (ensure you are signed into ArcGIS Pro if services are secured)."
+            )
 
-CREATE OR REPLACE TABLE raw_fish_counts AS
-SELECT
-    TRIM(STATION::VARCHAR) AS STATION
-    ,(CAST('1899-12-30' AS DATE) + CAST(FLOOR(CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
-    ,REPLACE(LOWER(SPECIES::VARCHAR), 'none', 'no fish observed') AS FC_SPECIES
-    
-    ,PASS1::INT AS PASS_1
-    ,PASS2::INT AS PASS_2
-    ,PASS_1 + PASS_2 AS TOTAL_COUNT
-    ,ANOMALIES::INT AS TOTAL_ANOMALIES
-    ,CASE
-        WHEN ANOMALIES_TYPE::VARCHAR = 'NULL' THEN NULL
-        ELSE UPPER(ANOMALIES_TYPE::VARCHAR)
-    END AS ANOMALIES
-    
-    ,ROW_NUMBER() OVER () AS row_num
-    
-FROM read_xlsx("{target_file}", sheet="Fish", all_varchar = true);
+        con = duckdb.connect(database=":memory:")
+        con.sql("INSTALL spatial; LOAD spatial;")
+        arcpy.SetProgressorPosition(1)
 
-CREATE OR REPLACE TABLE raw_phys_chem AS
-SELECT
-    TRIM(STATION::VARCHAR) AS STATION
-    ,(CAST('1899-12-30' AS DATE) + CAST(FLOOR(CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
-    ,TRIM(MON_TYPE::VARCHAR) AS VISIT_TYPE
-    
-    ,(NULLIF(AIRTEMP, 'NULL')::INTEGER * 9 / 5 + 32) AS PC_AIRTEMP_F
-    ,NULLIF(AIRTEMP, 'NULL')::INTEGER AS PC_AIRTEMP_C
-    ,NULLIF(H2OTEMP_C, 'NULL')::FLOAT AS PC_WATERTEMP_C
-    ,NULLIF(PH, 'NULL')::FLOAT AS PC_PH
-    ,NULLIF(DISOXY, 'NULL')::FLOAT AS PC_DO_CONC
-    ,NULLIF("%_SAT", 'NULL')::FLOAT AS PC_DO_SAT
-    ,NULLIF(CONDUCT, 'NULL')::FLOAT AS PC_COND
-    ,NULLIF(Turbidity, 'NULL')::FLOAT AS PC_TURB
-    ,CASE 
-        WHEN NULLIF(TRIM(MonitoringTime), 'NULL') IS NULL THEN NULL
-        ELSE STRFTIME(
-            STRPTIME(
-                CASE 
-                    WHEN TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) IS NOT NULL 
-                         AND TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) >= 0 
-                         AND TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) < 1
-                    THEN STRFTIME(
-                        TIMESTAMP '2000-01-01 00:00:00' + INTERVAL (ROUND(CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) * 86400)) SECOND, 
+        # -----------------------------------------------------------------
+        # STEP 2: Fetch Existing Stations & Visits from Feature Services
+        # -----------------------------------------------------------------
+        arcpy.SetProgressorLabel(
+            "Fetching existing Stations and Visits from Feature Services..."
+        )
+        logger.info("Fetching Stations and existing Visits...")
+
+        df_stations = featureservice_to_df(
+            URL_BIOMON_STATIONS,
+            out_fields=["STATION"],
+            token=token,
+        )
+        if df_stations.empty:
+            logger.error(
+                "Failed to retrieve Station records from the Stations Feature Service."
+            )
+            return
+
+        con.register("df_stations", df_stations)
+        con.execute("""
+            CREATE OR REPLACE TABLE stations AS
+            SELECT
+                * EXCLUDE (GEOMWKB)
+                ,ST_GeomFromWKB(GEOMWKB) AS geom
+            FROM df_stations;
+        """)
+
+        _refresh_visits_existing(con, token)
+        arcpy.SetProgressorPosition(2)
+
+        # -----------------------------------------------------------------
+        # STEP 3: Read & Normalize Excel Sheets in DuckDB
+        # -----------------------------------------------------------------
+        arcpy.SetProgressorLabel("Reading Excel sheets into DuckDB...")
+        logger.info(
+            "Reading Benthics, Fish, PhysChem, and Rhab sheets from workbook..."
+        )
+
+        con.execute(f"""
+            CREATE OR REPLACE TABLE raw_benthics_counts AS
+            SELECT
+                TRIM(STATION::VARCHAR) AS STATION
+                ,(CAST('1899-12-30' AS DATE) + CAST(FLOOR(CAST("DATE" AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
+                ,REPLACE(LOWER(TAXA::VARCHAR), 'none', 'no benthics observed') AS BC_TAXA
+                ,NULLIF("#INDVS", 'NULL')::INT AS INDIVIDUALS
+                ,NULLIF(trays, 'NULL')::INT AS TRAYS
+                ,NULLIF("#GRIDS", 'NULL')::INT AS GRIDS
+            FROM read_xlsx('{safe_target_file}', sheet='Benthics', all_varchar=true);
+
+            CREATE OR REPLACE TABLE raw_fish_counts AS
+            SELECT
+                TRIM(STATION::VARCHAR) AS STATION
+                ,(CAST('1899-12-30' AS DATE) + CAST(FLOOR(CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
+                ,REPLACE(LOWER(SPECIES::VARCHAR), 'none', 'no fish observed') AS FC_SPECIES
+                ,PASS1::INT AS PASS_1
+                ,PASS2::INT AS PASS_2
+                ,PASS_1 + PASS_2 AS TOTAL_COUNT
+                ,ANOMALIES::INT AS TOTAL_ANOMALIES
+                ,CASE
+                    WHEN ANOMALIES_TYPE::VARCHAR = 'NULL' THEN NULL
+                    ELSE UPPER(ANOMALIES_TYPE::VARCHAR)
+                END AS ANOMALIES
+                ,ROW_NUMBER() OVER () AS row_num
+            FROM read_xlsx('{safe_target_file}', sheet='Fish', all_varchar=true);
+
+            CREATE OR REPLACE TABLE raw_phys_chem AS
+            SELECT
+                TRIM(STATION::VARCHAR) AS STATION
+                ,(CAST('1899-12-30' AS DATE) + CAST(FLOOR(CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
+                ,TRIM(MON_TYPE::VARCHAR) AS VISIT_TYPE
+                ,(NULLIF(AIRTEMP, 'NULL')::INTEGER * 9 / 5 + 32) AS PC_AIRTEMP_F
+                ,NULLIF(AIRTEMP, 'NULL')::INTEGER AS PC_AIRTEMP_C
+                ,NULLIF(H2OTEMP_C, 'NULL')::FLOAT AS PC_WATERTEMP_C
+                ,NULLIF(PH, 'NULL')::FLOAT AS PC_PH
+                ,NULLIF(DISOXY, 'NULL')::FLOAT AS PC_DO_CONC
+                ,NULLIF("%_SAT", 'NULL')::FLOAT AS PC_DO_SAT
+                ,NULLIF(CONDUCT, 'NULL')::FLOAT AS PC_COND
+                ,NULLIF(Turbidity, 'NULL')::FLOAT AS PC_TURB
+                ,CASE 
+                    WHEN NULLIF(TRIM(MonitoringTime), 'NULL') IS NULL THEN NULL
+                    ELSE STRFTIME(
+                        STRPTIME(
+                            CASE 
+                                WHEN TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) IS NOT NULL 
+                                     AND TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) >= 0 
+                                     AND TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) < 1
+                                THEN STRFTIME(
+                                    TIMESTAMP '2000-01-01 00:00:00' + INTERVAL (ROUND(CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) * 86400)) SECOND, 
+                                    '%H%M'
+                                )
+                                ELSE LPAD(REPLACE(NULLIF(TRIM(MonitoringTime), 'NULL'), ':', ''), 4, '0')
+                            END, 
+                            '%H%M'
+                        ), 
                         '%H%M'
                     )
-                    ELSE LPAD(REPLACE(NULLIF(TRIM(MonitoringTime), 'NULL'), ':', ''), 4, '0')
-                END, 
-                '%H%M'
-            ), 
-            '%H%M'
+                END AS PC_TIME
+                ,NULLIF(COMMENTS, 'NULL')::VARCHAR AS PC_NOTES
+            FROM read_xlsx('{safe_target_file}', sheet='PhysChem', all_varchar=true);
+
+            CREATE OR REPLACE TABLE raw_rhab AS
+            SELECT
+                TRIM(STATION::VARCHAR) AS STATION
+                ,(CAST('1899-12-30' AS DATE) + CAST(FLOOR(CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
+                ,TRIM(MON_TYPE::VARCHAR) AS VISIT_TYPE
+                ,NULLIF(INSTR_COVER, 'NULL')::INTEGER AS RHAB_INSTREAMCOVER
+                ,NULLIF(EPI_SUBSTR, 'NULL')::INTEGER AS RHAB_EPISUBSTRATE
+                ,NULLIF(EMBEDD, 'NULL')::INTEGER AS RHAB_EMBEDDEDNESS
+                ,NULLIF(CH_ALTER, 'NULL')::INTEGER AS RHAB_CHANNELALT
+                ,NULLIF(SED_DEPOSIT, 'NULL')::INTEGER AS RHAB_SEDDEPOSIT
+                ,NULLIF(RIFFLE_FREQ, 'NULL')::INTEGER AS RHAB_RIFFLEFREQ
+                ,NULLIF(CHAN_FLOW, 'NULL')::INTEGER AS RHAB_CHANNELFLOWSTATUS
+                ,NULLIF(LB_BANKVEG, 'NULL')::INTEGER AS RHAB_VEG_LB
+                ,NULLIF(RB_BANKVEG, 'NULL')::INTEGER AS RHAB_VEG_RB
+                ,NULLIF(LB_BANKSTAB, 'NULL')::INTEGER AS RHAB_STABILITY_LB
+                ,NULLIF(RB_BANKSTAB, 'NULL')::INTEGER AS RHAB_STABILITY_RB
+                ,NULLIF(LB_BUFFER, 'NULL')::INTEGER AS RHAB_BUFFER_LB
+                ,NULLIF(RB_BUFFER, 'NULL')::INTEGER AS RHAB_BUFFER_RB
+                ,NULLIF(COMMENTS, 'NULL')::VARCHAR AS RHAB_NOTES
+            FROM read_xlsx('{safe_target_file}', sheet='Rhab', all_varchar=true);
+        """)
+        arcpy.SetProgressorPosition(3)
+
+        # -----------------------------------------------------------------
+        # STEP 4: Construct & Upsert Primary Visits (PhysChem & Rhab)
+        # -----------------------------------------------------------------
+        arcpy.SetProgressorLabel("Processing and upserting PhysChem & Rhab Visits...")
+        con.execute("""
+            CREATE OR REPLACE TABLE visits AS
+            SELECT
+                -- Shared fields
+                COALESCE(pc.STATION, rhab.STATION) AS STATION
+                ,CAST(COALESCE(pc.VISIT_DATE, rhab.VISIT_DATE) AS TIMESTAMP) + INTERVAL 12 HOUR AS VISIT_DATE
+                ,CASE
+                    WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIF' AND COALESCE(pc.STATION, rhab.STATION) NOT IN (SELECT STATION FROM raw_fish_counts) AND rhab.VISIT_TYPE IS NULL THEN 'OTH'
+                    WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIF' AND COALESCE(pc.STATION, rhab.STATION) NOT IN (SELECT STATION FROM raw_fish_counts) AND rhab.VISIT_TYPE IS NOT NULL THEN 'HAB'
+                    ELSE COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE)
+                END AS VISIT_TYPE
+                
+                -- Calculated fields
+                ,CASE
+                    WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIF' THEN 'DEP'
+                    ELSE NULL
+                END AS FISH_LEADER1
+                ,CASE
+                    WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIF' THEN 'DEP'
+                    ELSE NULL
+                END AS FISH_LEADER2
+                ,CASE
+                    WHEN rhab.VISIT_TYPE IS NOT NULL THEN 'DEP'
+                    ELSE NULL
+                END AS HAB_ASSESSOR
+                ,CASE
+                    WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIB' THEN 'DEP'
+                    ELSE NULL
+                END AS BEN_SAMPLER
+                ,CASE
+                    WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIB' THEN 'DEP'
+                    ELSE NULL
+                END AS BEN_SUBSAMPLER
+                ,CASE
+                    WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIF' THEN 'DEP'
+                    ELSE NULL
+                END AS FISH_TAXONOMIST1
+                ,CASE
+                    WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIF' THEN 'DEP'
+                    ELSE NULL
+                END AS FISH_TAXONOMIST2
+                ,'DEP' AS DATA_ENTERER
+                ,CURRENT_DATE AS DATA_ENTER_DATE
+                
+                ,CASE 
+                    WHEN TRIM(SPLIT_PART(COALESCE(ve.DATA_NOTES, ''), 'Bulk upload as of', 1)) = '' THEN ''
+                    ELSE TRIM(SPLIT_PART(COALESCE(ve.DATA_NOTES, ''), 'Bulk upload as of', 1)) || ' '
+                END || 'Bulk upload as of ' || CURRENT_DATE || '.' || CASE
+                    WHEN pc.STATION IS NOT NULL AND rhab.STATION IS NOT NULL THEN ' PhysChem and Rhab data imported.'
+                    WHEN pc.STATION IS NOT NULL AND rhab.STATION IS NULL THEN ' PhysChem data imported.'
+                    WHEN pc.STATION IS NULL AND rhab.STATION IS NOT NULL THEN ' Rhab data imported.'
+                    ELSE ''
+                END AS DATA_NOTES
+
+                -- Phys Chem
+                ,pc.PC_AIRTEMP_F
+                ,pc.PC_AIRTEMP_C
+                ,pc.PC_WATERTEMP_C
+                ,pc.PC_PH
+                ,pc.PC_DO_CONC
+                ,pc.PC_DO_SAT
+                ,pc.PC_COND
+                ,pc.PC_TURB
+                ,pc.PC_NOTES
+
+                -- RHAB
+                ,rhab.RHAB_INSTREAMCOVER
+                ,rhab.RHAB_EPISUBSTRATE
+                ,rhab.RHAB_EMBEDDEDNESS
+                ,rhab.RHAB_CHANNELALT
+                ,rhab.RHAB_SEDDEPOSIT
+                ,rhab.RHAB_RIFFLEFREQ
+                ,rhab.RHAB_CHANNELFLOWSTATUS
+                ,rhab.RHAB_VEG_LB
+                ,rhab.RHAB_VEG_RB
+                ,rhab.RHAB_STABILITY_LB
+                ,rhab.RHAB_STABILITY_RB
+                ,rhab.RHAB_BUFFER_LB
+                ,rhab.RHAB_BUFFER_RB
+                ,rhab.RHAB_NOTES
+                
+                ,COALESCE(ve.geom, s.geom) AS GEOM
+                ,ST_X(COALESCE(ve.geom, s.geom)) AS x
+                ,ST_Y(COALESCE(ve.geom, s.geom)) AS y
+                ,ve.GlobalID
+
+            FROM raw_phys_chem pc
+            FULL OUTER JOIN raw_rhab rhab
+                ON pc.STATION = rhab.STATION
+                AND pc.VISIT_DATE = rhab.VISIT_DATE
+                AND pc.VISIT_TYPE = rhab.VISIT_TYPE
+            LEFT JOIN visits_existing ve
+                ON COALESCE(pc.STATION, rhab.STATION) = ve.STATION
+                AND DATE(COALESCE(pc.VISIT_DATE, rhab.VISIT_DATE)) = DATE(ve.VISIT_DATE)
+                AND COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = ve.VISIT_TYPE
+            LEFT JOIN stations s
+                ON COALESCE(pc.STATION, rhab.STATION) = s.STATION
+            WHERE pc.STATION IS NOT NULL OR rhab.STATION IS NOT NULL;
+        """)
+
+        df_off_by_one = con.sql("""
+            SELECT
+                ve.GlobalID
+                ,ve.STATION
+                ,ve.VISIT_TYPE
+                ,CAST(ve.VISIT_DATE AS DATE) AS EXISTING_VISIT_DATE
+                ,CAST(v.VISIT_DATE AS DATE) AS IMPORT_DATE
+            FROM visits_existing ve
+            INNER JOIN visits v
+                ON ve.STATION = v.STATION
+                AND ve.VISIT_TYPE = v.VISIT_TYPE
+            WHERE CAST(ve.VISIT_DATE AS DATE) != CAST(v.VISIT_DATE AS DATE)
+                AND (
+                    CAST(ve.VISIT_DATE AS DATE) = CAST(v.VISIT_DATE AS DATE) - INTERVAL 1 DAY
+                    OR CAST(ve.VISIT_DATE AS DATE) = CAST(v.VISIT_DATE AS DATE) + INTERVAL 1 DAY
+                )
+            ORDER BY ve.STATION, v.VISIT_DATE;
+        """).df()
+
+        if not df_off_by_one.empty:
+            for _, row in df_off_by_one.iterrows():
+                logger.warning(
+                    f"Potential 1-day date mismatch detected for Station {row['STATION']} ({row['VISIT_TYPE']}): "
+                    f"Existing Date = {row['EXISTING_VISIT_DATE']}, Excel Import Date = {row['IMPORT_DATE']}"
+                )
+
+        df_visits_update = con.sql(
+            "SELECT * FROM visits WHERE GlobalID IS NOT NULL"
+        ).df()
+        df_visits_insert = con.sql(
+            "SELECT * EXCLUDE (GlobalID) FROM visits WHERE GlobalID IS NULL"
+        ).df()
+
+        logger.info(
+            f"Primary Visits (PhysChem/Rhab) -> Updates: {len(df_visits_update)} | Inserts: {len(df_visits_insert)}"
         )
-    END AS PC_TIME
-    
-    ,NULLIF(COMMENTS, 'NULL')::VARCHAR AS PC_NOTES
-    
-FROM read_xlsx("{target_file}", sheet="PhysChem", all_varchar = true);
 
-CREATE OR REPLACE TABLE raw_rhab AS
-SELECT
-    TRIM(STATION::VARCHAR) AS STATION
-    ,(CAST('1899-12-30' AS DATE) + CAST(FLOOR(CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
-    ,TRIM(MON_TYPE::VARCHAR) AS VISIT_TYPE
+        if len(df_visits_update) > 0:
+            run_apply_edits(
+                URL_BIOMON_EDIT_FS,
+                LAYERS["visits"],
+                df_to_esri_features(df_visits_update, False, True, "GlobalID"),
+                token,
+                True,
+            )
+        if len(df_visits_insert) > 0:
+            run_apply_edits(
+                URL_BIOMON_EDIT_FS,
+                LAYERS["visits"],
+                df_to_esri_features(
+                    df_visits_insert, True, False, "GlobalID", DEFAULT_WKID
+                ),
+                token,
+                False,
+            )
+            logger.info(
+                "Refreshing existing Visits from Feature Service after PhysChem/Rhab inserts..."
+            )
+            _refresh_visits_existing(con, token)
 
-    ,NULLIF(INSTR_COVER, 'NULL')::INTEGER AS RHAB_INSTREAMCOVER
-    ,NULLIF(EPI_SUBSTR, 'NULL')::INTEGER AS RHAB_EPISUBSTRATE
-    ,NULLIF(EMBEDD, 'NULL')::INTEGER AS RHAB_EMBEDDEDNESS
-    ,NULLIF(CH_ALTER, 'NULL')::INTEGER AS RHAB_CHANNELALT
-    ,NULLIF(SED_DEPOSIT, 'NULL')::INTEGER AS RHAB_SEDDEPOSIT
-    ,NULLIF(RIFFLE_FREQ, 'NULL')::INTEGER AS RHAB_RIFFLEFREQ
-    ,NULLIF(CHAN_FLOW, 'NULL')::INTEGER AS RHAB_CHANNELFLOWSTATUS
-    ,NULLIF(LB_BANKVEG, 'NULL')::INTEGER AS RHAB_VEG_LB
-    ,NULLIF(RB_BANKVEG, 'NULL')::INTEGER AS RHAB_VEG_RB
-    ,NULLIF(LB_BANKSTAB, 'NULL')::INTEGER AS RHAB_STABILITY_LB
-    ,NULLIF(RB_BANKSTAB, 'NULL')::INTEGER AS RHAB_STABILITY_RB
-    ,NULLIF(LB_BUFFER, 'NULL')::INTEGER AS RHAB_BUFFER_LB
-    ,NULLIF(RB_BUFFER, 'NULL')::INTEGER AS RHAB_BUFFER_RB
+        arcpy.SetProgressorPosition(4)
 
-    ,NULLIF(COMMENTS, 'NULL')::VARCHAR AS RHAB_NOTES
+        # -----------------------------------------------------------------
+        # STEP 5: Ensure Parent Visits Exist for Fish (BIF) & Benthic (BIB)
+        # -----------------------------------------------------------------
+        arcpy.SetProgressorLabel(
+            "Checking & creating supplemental Visits for Fish (BIF) and Benthics (BIB)..."
+        )
+        con.execute("""
+            CREATE OR REPLACE TABLE fc_visits AS
+            WITH fish_agg AS (
+                SELECT
+                    STATION
+                    ,VISIT_DATE
+                    ,'BIF' AS VISIT_TYPE
+                FROM raw_fish_counts
+                GROUP BY STATION, VISIT_DATE
+            )
+            SELECT
+                fa.STATION
+                ,fa.VISIT_DATE
+                ,fa.VISIT_TYPE
+                ,'DEP' AS FISH_LEADER1
+                ,'DEP' AS FISH_LEADER2
+                ,'DEP' AS FISH_TAXONOMIST1
+                ,'DEP' AS FISH_TAXONOMIST2
+                ,'DEP' AS DATA_ENTERER
+                ,CURRENT_DATE AS DATA_ENTER_DATE
+                ,COALESCE(ve.DATA_NOTES, '') || 'Bulk upload as of ' || CURRENT_DATE AS DATA_NOTES
+                ,COALESCE(ve.geom, s.geom) AS GEOM
+                ,ST_X(COALESCE(ve.geom, s.geom)) AS x
+                ,ST_Y(COALESCE(ve.geom, s.geom)) AS y
+                ,ve.GlobalID
+            FROM fish_agg fa
+            LEFT JOIN visits_existing ve
+                ON fa.STATION = ve.STATION
+                AND DATE(fa.VISIT_DATE) = DATE(ve.VISIT_DATE)
+                AND fa.VISIT_TYPE = ve.VISIT_TYPE
+            LEFT JOIN stations s
+                ON fa.STATION = s.STATION
+            WHERE
+                ve.GlobalID IS NULL
+                AND hash(fa.STATION, fa.VISIT_DATE, fa.VISIT_TYPE) NOT IN (
+                    SELECT
+                        hash(v.STATION, v.VISIT_DATE, v.VISIT_TYPE)
+                    FROM visits v
+                );
 
-FROM read_xlsx("{target_file}", sheet="Rhab", all_varchar = true);
-SELECT * 
-FROM raw_phys_chem
-WHERE STATION IN ('LFLF102', 'LFLF301A')
-ORDER BY STATION, VISIT_DATE;
-'''
+            CREATE OR REPLACE TABLE bc_visits AS
+            WITH benthic_agg AS (
+                SELECT
+                    STATION
+                    ,VISIT_DATE
+                    ,'BIB' AS VISIT_TYPE
+                FROM raw_benthics_counts
+                GROUP BY STATION, VISIT_DATE
+            )
+            SELECT
+                ba.STATION
+                ,ba.VISIT_DATE
+                ,ba.VISIT_TYPE
+                ,'DEP' AS BEN_SAMPLER
+                ,'DEP' AS BEN_SUBSAMPLER
+                ,'DEP' AS DATA_ENTERER
+                ,CURRENT_DATE AS DATA_ENTER_DATE
+                ,COALESCE(ve.DATA_NOTES, '') || 'Bulk upload as of ' || CURRENT_DATE AS DATA_NOTES
+                ,COALESCE(ve.geom, s.geom) AS GEOM
+                ,ST_X(COALESCE(ve.geom, s.geom)) AS x
+                ,ST_Y(COALESCE(ve.geom, s.geom)) AS y
+                ,ve.GlobalID
+            FROM benthic_agg ba
+            LEFT JOIN visits_existing ve
+                ON ba.STATION = ve.STATION
+                AND DATE(ba.VISIT_DATE) = DATE(ve.VISIT_DATE)
+                AND ba.VISIT_TYPE = ve.VISIT_TYPE
+            LEFT JOIN stations s
+                ON ba.STATION = s.STATION
+            WHERE
+                ve.GlobalID IS NULL
+                AND hash(ba.STATION, ba.VISIT_DATE, ba.VISIT_TYPE) NOT IN (
+                    SELECT
+                        hash(v.STATION, v.VISIT_DATE, v.VISIT_TYPE)
+                    FROM visits v
+                );
+        """)
 
-con.sql(sql)
+        df_visits_insert_fc = con.sql(
+            "SELECT * EXCLUDE (GlobalID) FROM fc_visits WHERE GlobalID IS NULL AND GEOM IS NOT NULL"
+        ).df()
+        if len(df_visits_insert_fc) > 0:
+            logger.info(
+                f"Inserting {len(df_visits_insert_fc)} supplemental Fish (BIF) Visits..."
+            )
+            run_apply_edits(
+                URL_BIOMON_EDIT_FS,
+                LAYERS["visits"],
+                df_to_esri_features(
+                    df_visits_insert_fc, True, False, "GlobalID", DEFAULT_WKID
+                ),
+                token,
+                False,
+            )
 
-# %%
-sql = """
-CREATE OR REPLACE TABLE visits AS
-SELECT
-    -- Shared fields
-    COALESCE(pc.STATION, rhab.STATION) AS STATION
-    ,CAST(COALESCE(pc.VISIT_DATE, rhab.VISIT_DATE) AS TIMESTAMP) + INTERVAL 12 HOUR AS VISIT_DATE
-    ,CASE
-        WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIF' AND COALESCE(pc.STATION, rhab.STATION) NOT IN (SELECT STATION FROM raw_fish_counts) AND rhab.VISIT_TYPE IS NULL THEN 'OTH'
-        WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIF' AND COALESCE(pc.STATION, rhab.STATION) NOT IN (SELECT STATION FROM raw_fish_counts) AND rhab.VISIT_TYPE IS NOT NULL THEN 'HAB'
-        ELSE COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE)
-    END AS VISIT_TYPE
-    
-    -- Calculated fields
-    ,CASE
-        WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIF' THEN 'DEP'
-        ELSE NULL
-    END AS FISH_LEADER1
-    ,CASE
-        WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIF' THEN 'DEP'
-        ELSE NULL
-    END AS FISH_LEADER2
-    ,CASE
-        WHEN rhab.VISIT_TYPE IS NOT NULL THEN 'DEP'
-        ELSE NULL
-    END AS HAB_ASSESSOR
-    ,CASE
-        WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIB' THEN 'DEP'
-        ELSE NULL
-    END AS BEN_SAMPLER
-    ,CASE
-        WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIB' THEN 'DEP'
-        ELSE NULL
-    END AS BEN_SUBSAMPLER
-    ,CASE
-        WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIF' THEN 'DEP'
-        ELSE NULL
-    END AS FISH_TAXONOMIST1
-    ,CASE
-        WHEN COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = 'BIF' THEN 'DEP'
-        ELSE NULL
-    END AS FISH_TAXONOMIST2
-    ,'DEP' AS DATA_ENTERER
-    ,CURRENT_DATE AS DATA_ENTER_DATE
-    
-    ,CASE 
-        WHEN TRIM(SPLIT_PART(COALESCE(ve.DATA_NOTES, ''), 'Bulk upload as of', 1)) = '' THEN ''
-        ELSE TRIM(SPLIT_PART(COALESCE(ve.DATA_NOTES, ''), 'Bulk upload as of', 1)) || ' '
-    END || 'Bulk upload as of ' || CURRENT_DATE || '.' || CASE
-        WHEN pc.STATION IS NOT NULL AND rhab.STATION IS NOT NULL THEN ' PhysChem and Rhab data imported.'
-        WHEN pc.STATION IS NOT NULL AND rhab.STATION IS NULL THEN ' PhysChem data imported.'
-        WHEN pc.STATION IS NULL AND rhab.STATION IS NOT NULL THEN ' Rhab data imported.'
-        ELSE ''
-    END AS DATA_NOTES
+        df_visits_insert_bc = con.sql(
+            "SELECT * EXCLUDE (GlobalID) FROM bc_visits WHERE GlobalID IS NULL AND GEOM IS NOT NULL"
+        ).df()
+        if len(df_visits_insert_bc) > 0:
+            logger.info(
+                f"Inserting {len(df_visits_insert_bc)} supplemental Benthic (BIB) Visits..."
+            )
+            run_apply_edits(
+                URL_BIOMON_EDIT_FS,
+                LAYERS["visits"],
+                df_to_esri_features(
+                    df_visits_insert_bc, True, False, "GlobalID", DEFAULT_WKID
+                ),
+                token,
+                False,
+            )
 
-    -- Phys Chem
-    ,pc.PC_AIRTEMP_F
-    ,pc.PC_AIRTEMP_C
-    ,pc.PC_WATERTEMP_C
-    ,pc.PC_PH
-    ,pc.PC_DO_CONC
-    ,pc.PC_DO_SAT
-    ,pc.PC_COND
-    ,pc.PC_TURB
-    ,pc.PC_NOTES
+        if len(df_visits_insert_fc) > 0 or len(df_visits_insert_bc) > 0:
+            logger.info(
+                "Refreshing existing Visits from Feature Service after supplemental Visit inserts..."
+            )
+            _refresh_visits_existing(con, token)
 
-    -- RHAB
-    ,rhab.RHAB_INSTREAMCOVER
-    ,rhab.RHAB_EPISUBSTRATE
-    ,rhab.RHAB_EMBEDDEDNESS
-    ,rhab.RHAB_CHANNELALT
-    ,rhab.RHAB_SEDDEPOSIT
-    ,rhab.RHAB_RIFFLEFREQ
-    ,rhab.RHAB_CHANNELFLOWSTATUS
-    ,rhab.RHAB_VEG_LB
-    ,rhab.RHAB_VEG_RB
-    ,rhab.RHAB_STABILITY_LB
-    ,rhab.RHAB_STABILITY_RB
-    ,rhab.RHAB_BUFFER_LB
-    ,rhab.RHAB_BUFFER_RB
-    ,rhab.RHAB_NOTES
-    
-    ,COALESCE(ve.geom, s.geom) AS GEOM
-    ,ve.GlobalId
+        arcpy.SetProgressorPosition(5)
 
-FROM raw_phys_chem pc
-FULL OUTER JOIN raw_rhab rhab
-    ON pc.STATION = rhab.STATION
-    AND pc.VISIT_DATE = rhab.VISIT_DATE
-    AND pc.VISIT_TYPE = rhab.VISIT_TYPE
-LEFT JOIN visits_existing ve
-    ON COALESCE(pc.STATION, rhab.STATION) = ve.STATION
-    AND DATE(COALESCE(pc.VISIT_DATE, rhab.VISIT_DATE)) = DATE(ve.VISIT_DATE)
-    AND COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE) = ve.VISIT_TYPE
-LEFT JOIN stations s
-    ON COALESCE(pc.STATION, rhab.STATION) = s.STATION
-WHERE pc.STATION IS NOT NULL OR rhab.STATION IS NOT NULL
-;
-SELECT 
-    STATION
-    ,VISIT_DATE
-    ,VISIT_TYPE
-    ,GlobalId
-    ,DATA_NOTES
-FROM visits
-ORDER BY STATION, VISIT_DATE;
-"""
-con.sql(sql)
+        # -----------------------------------------------------------------
+        # STEP 6: Fetch Existing Fish Counts & Upsert Fish Counts
+        # -----------------------------------------------------------------
+        arcpy.SetProgressorLabel("Upserting Fish Counts...")
+        logger.info("Fetching existing Fish Counts for relational linking...")
 
-# %%
-# Step 1 & 2: Auth & Introspection
+        df_fishcounts = featureservice_to_df(
+            f"{URL_BIOMON_EDIT_FS}/{LAYERS['fish_counts']}",
+            out_fields=["GlobalID", "GUID", "FC_SPECIES"],
+            token=token,
+        )
 
-token = get_portal_token()
-fs_url = "https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_EDIT/FeatureServer"
+        if not df_fishcounts.empty:
+            con.register("df_fishcounts", df_fishcounts)
+            con.execute("""
+                CREATE OR REPLACE TABLE fish_counts_existing AS
+                SELECT * FROM df_fishcounts;
+            """)
+        else:
+            con.execute("""
+                CREATE OR REPLACE TABLE fish_counts_existing (
+                    GlobalID VARCHAR,
+                    GUID VARCHAR,
+                    FC_SPECIES VARCHAR
+                );
+            """)
 
+        con.execute("""
+            CREATE OR REPLACE TABLE transformed_fish_counts AS
+            WITH split_anomalies AS (
+                SELECT 
+                    row_num
+                    ,UNNEST(STRING_SPLIT(REPLACE(UPPER(ANOMALIES), '/', ','), ',')) AS token
+                    ,TOTAL_ANOMALIES
+                FROM raw_fish_counts
+                WHERE ANOMALIES IS NOT NULL
+            ),
+            parse_anomalies AS (
+                SELECT 
+                    row_num
+                    ,TRIM(token) AS token_clean
+                    ,REGEXP_EXTRACT(TRIM(token), '^[0-9]+') AS num_part
+                    ,REGEXP_EXTRACT(TRIM(token), '[A-Z_]+') AS code_part
+                    ,TOTAL_ANOMALIES
+                FROM split_anomalies
+                WHERE TRIM(token) != ''
+            ),
+            agg_anomalies AS (
+                SELECT 
+                    row_num,
+                    code_part,
+                    COALESCE(CAST(NULLIF(num_part, '') AS INT), TOTAL_ANOMALIES) AS count_val
+                FROM parse_anomalies
+                WHERE code_part != ''
+            ),
+            pivot_anomalies AS (
+                SELECT 
+                    row_num,
+                    SUM(CASE WHEN code_part = 'BL' THEN count_val ELSE 0 END) AS BL,
+                    SUM(CASE WHEN code_part = 'RE' THEN count_val ELSE 0 END) AS RE,
+                    SUM(CASE WHEN code_part = 'LE' THEN count_val ELSE 0 END) AS LE,
+                    SUM(CASE WHEN code_part = 'GR' THEN count_val ELSE 0 END) AS GR,
+                    SUM(CASE WHEN code_part = 'UL' THEN count_val ELSE 0 END) AS UL,
+                    SUM(CASE WHEN code_part = 'DV' THEN count_val ELSE 0 END) AS DV,
+                    SUM(CASE WHEN code_part = 'DM' THEN count_val ELSE 0 END) AS DM,
+                    SUM(CASE WHEN code_part = 'SC' THEN count_val ELSE 0 END) AS SC,
+                    SUM(CASE WHEN code_part = 'RS' THEN count_val ELSE 0 END) AS RS,
+                    SUM(CASE WHEN code_part = 'DI' THEN count_val ELSE 0 END) AS DI,
+                    SUM(CASE WHEN code_part = 'HM' THEN count_val ELSE 0 END) AS HM,
+                    SUM(CASE WHEN code_part = 'BS' THEN count_val ELSE 0 END) AS BS,
+                    SUM(CASE WHEN code_part = 'AW' THEN count_val ELSE 0 END) AS AW,
+                    SUM(CASE WHEN code_part = 'EP' THEN count_val ELSE 0 END) AS EP,
+                    SUM(CASE WHEN code_part = 'IK' THEN count_val ELSE 0 END) AS IK,
+                    SUM(CASE WHEN code_part = 'FU' THEN count_val ELSE 0 END) AS FU,
+                    SUM(CASE WHEN code_part = 'FI' THEN count_val ELSE 0 END) AS FI,
+                    SUM(CASE WHEN code_part = 'CL' THEN count_val ELSE 0 END) AS CL,
+                    SUM(CASE WHEN code_part = 'FD' THEN count_val ELSE 0 END) AS FD,
+                    SUM(CASE WHEN code_part = 'HK' THEN count_val ELSE 0 END) AS HK,
+                    SUM(CASE WHEN code_part = 'CT' THEN count_val ELSE 0 END) AS CT,
+                    SUM(CASE WHEN code_part = 'AN' THEN count_val ELSE 0 END) AS AN,
+                    SUM(CASE WHEN code_part = 'EC' THEN count_val ELSE 0 END) AS EC,
+                    SUM(CASE WHEN code_part = 'EH' THEN count_val ELSE 0 END) AS EH,
+                    SUM(CASE WHEN code_part = 'PO' THEN count_val ELSE 0 END) AS PO,
+                    SUM(CASE WHEN code_part = 'OR_' THEN count_val ELSE 0 END) AS OR_,
+                    SUM(CASE WHEN code_part = 'NO' THEN count_val ELSE 0 END) AS NO,
+                    SUM(CASE WHEN code_part = 'CA' THEN count_val ELSE 0 END) AS CA,
+                    SUM(CASE WHEN code_part = 'OT' THEN count_val ELSE 0 END) AS OT
+                FROM agg_anomalies
+                GROUP BY row_num
+            )
+            SELECT 
+                r.STATION,
+                r.VISIT_DATE,
+                r.FC_SPECIES,
+                r.PASS_1,
+                r.PASS_2,
+                r.TOTAL_COUNT,
+                r.TOTAL_ANOMALIES,
+                r.ANOMALIES,
+                COALESCE(p.BL, 0) AS BL,
+                COALESCE(p.RE, 0) AS RE,
+                COALESCE(p.LE, 0) AS LE,
+                COALESCE(p.GR, 0) AS GR,
+                COALESCE(p.UL, 0) AS UL,
+                COALESCE(p.DV, 0) AS DV,
+                COALESCE(p.DM, 0) AS DM,
+                COALESCE(p.SC, 0) AS SC,
+                COALESCE(p.RS, 0) AS RS,
+                COALESCE(p.DI, 0) AS DI,
+                COALESCE(p.HM, 0) AS HM,
+                COALESCE(p.BS, 0) AS BS,
+                COALESCE(p.AW, 0) AS AW,
+                COALESCE(p.EP, 0) AS EP,
+                COALESCE(p.IK, 0) AS IK,
+                COALESCE(p.FU, 0) AS FU,
+                COALESCE(p.FI, 0) AS FI,
+                COALESCE(p.CL, 0) AS CL,
+                COALESCE(p.FD, 0) AS FD,
+                COALESCE(p.HK, 0) AS HK,
+                COALESCE(p.CT, 0) AS CT,
+                COALESCE(p.AN, 0) AS AN,
+                COALESCE(p.EC, 0) AS EC,
+                COALESCE(p.EH, 0) AS EH,
+                COALESCE(p.PO, 0) AS PO,
+                COALESCE(p.OR_, 0) AS OR_,
+                COALESCE(p.NO, 0) AS NO,
+                COALESCE(p.CA, 0) AS CA,
+                COALESCE(p.OT, 0) AS OT,
+                'Yes' AS IND_ANOMALIES,
+                ve.GlobalID AS GUID,
+                fc.GlobalID
+            FROM raw_fish_counts r
+            LEFT JOIN pivot_anomalies p ON r.row_num = p.row_num
+            LEFT JOIN visits_existing ve
+                ON r.STATION = ve.STATION
+                AND DATE(r.VISIT_DATE) = DATE(ve.VISIT_DATE)
+            LEFT JOIN fish_counts_existing fc
+                ON ve.GlobalID = fc.GUID
+                AND r.FC_SPECIES = fc.FC_SPECIES
+            ORDER BY r.row_num;
+        """)
 
-# %%
-df_visits_update = con.sql("SELECT * FROM visits WHERE GlobalID IS NOT NULL").df()
-df_visits_insert = con.sql(
-    "SELECT * EXCLUDE (GlobalID) FROM visits WHERE GlobalID IS NULL"
-).df()
+        df_fish_upd = con.sql(
+            "SELECT * FROM transformed_fish_counts WHERE GlobalID IS NOT NULL"
+        ).df()
+        df_fish_ins = con.sql(
+            "SELECT * EXCLUDE (GlobalID) FROM transformed_fish_counts WHERE GlobalID IS NULL"
+        ).df()
 
-# %%
-df_visits_update
+        logger.info(
+            f"Fish Counts -> Updates: {len(df_fish_upd)} | Inserts: {len(df_fish_ins)}"
+        )
 
-# %%
-df_visits_insert
+        if len(df_fish_upd) > 0:
+            run_apply_edits(
+                URL_BIOMON_EDIT_FS,
+                LAYERS["fish_counts"],
+                df_to_esri_features(df_fish_upd, False, True, "GlobalID"),
+                token,
+                True,
+            )
+        if len(df_fish_ins) > 0:
+            run_apply_edits(
+                URL_BIOMON_EDIT_FS,
+                LAYERS["fish_counts"],
+                df_to_esri_features(df_fish_ins, False, False, "GlobalID"),
+                token,
+                False,
+            )
 
-# %%
-sql = """
-SELECT
-    ve.GlobalId
-    ,ve.STATION
-    ,ve.VISIT_TYPE
-    ,ve.VISIT_DATE AS EXISTING_VISIT_DATE
-    ,v.VISIT_DATE AS CORRECT_IMPORT_DATE
-    ,ve.DATA_NOTES
-FROM visits_existing ve
-INNER JOIN visits v
-    ON ve.STATION = v.STATION
-    AND ve.VISIT_TYPE = v.VISIT_TYPE
-WHERE CAST(ve.VISIT_DATE AS DATE) != CAST(v.VISIT_DATE AS DATE)
-    AND (
-        CAST(ve.VISIT_DATE AS DATE) = CAST(v.VISIT_DATE AS DATE) - INTERVAL 1 DAY
-        OR CAST(ve.VISIT_DATE AS DATE) = CAST(v.VISIT_DATE AS DATE) + INTERVAL 1 DAY
-    )
-ORDER BY ve.STATION, v.VISIT_DATE;
-"""
-
-con.sql(sql)
-
-# %%
-# Step 5: Two-Phase Ingestion & Relational Re-linking (Visits & Fish Counts)
-# 5A: Visits Upsert (Updates & Inserts)
-if len(df_visits_update) > 0:
-    run_apply_edits(
-        fs_url,
-        0,
-        df_to_esri_features(df_visits_update, False, True, "GlobalID"),
-        token,
-        True,
-    )
-if len(df_visits_insert) > 0:
-    run_apply_edits(
-        fs_url,
-        0,
-        df_to_esri_features(df_visits_insert, True, False, "GlobalID", 2248),
-        token,
-        False,
-    )
-
-
-# %%
-sql = """
-CREATE OR REPLACE TABLE fc_visits AS
-WITH fish_agg AS (
-    SELECT
-        STATION
-        ,VISIT_DATE
-        ,'BIF' AS VISIT_TYPE
-    FROM raw_fish_counts
-    GROUP BY STATION, VISIT_DATE
-)
-SELECT
-    fa.STATION
-    ,fa.VISIT_DATE
-    ,fa.VISIT_TYPE
-    
-    -- Calculated fields
-    ,'DEP' AS FISH_LEADER1
-    ,'DEP' AS FISH_LEADER2
-    ,'DEP' AS FISH_TAXONOMIST1
-    ,'DEP' AS FISH_TAXONOMIST2
-    ,'DEP' AS DATA_ENTERER
-    ,CURRENT_DATE AS DATA_ENTER_DATE
-    ,COALESCE(ve.DATA_NOTES, '') || 'Bulk upload as of ' || CURRENT_DATE AS DATA_NOTES
-    
-    ,COALESCE(ve.geom, s.geom) AS GEOM
-    ,ve.GlobalId
-FROM fish_agg fa
-LEFT JOIN visits_existing ve
-    ON fa.STATION = ve.STATION
-    AND DATE(fa.VISIT_DATE) = DATE(ve.VISIT_DATE)
-    AND fa.VISIT_TYPE = ve.VISIT_TYPE
-LEFT JOIN stations s
-    ON fa.STATION = s.STATION
-WHERE
-    ve.GlobalId IS NULL
-    AND hash(fa.STATION, fa.VISIT_DATE, fa.VISIT_TYPE) NOT IN (
-        SELECT
-            hash(v.STATION, v.VISIT_DATE, v.VISIT_TYPE)
-        FROM visits v
-    )
-;
-FROM fc_visits
-"""
-con.sql(sql)
-
-# %%
-df_visits_insert_fc = con.sql("SELECT * FROM fc_visits").df()
-
-if len(df_visits_insert_fc) > 0:
-    run_apply_edits(
-        fs_url,
-        0,
-        df_to_esri_features(df_visits_insert_fc, True, False, "GlobalID", 2248),
-        token,
-        False,
-    )
-
-# %%
-sql = """
-CREATE OR REPLACE TABLE bc_visits AS
-WITH benthic_agg AS (
-    SELECT
-        STATION
-        ,VISIT_DATE
-        ,'BIB' AS VISIT_TYPE
-    FROM raw_benthics_counts
-    GROUP BY STATION, VISIT_DATE
-)
-SELECT
-    ba.STATION
-    ,ba.VISIT_DATE
-    ,ba.VISIT_TYPE
-    
-    -- Calculated fields
-    ,'DEP' AS BEN_SAMPLER
-    ,'DEP' AS BEN_SUBSAMPLER
-    ,'DEP' AS DATA_ENTERER
-    ,CURRENT_DATE AS DATA_ENTER_DATE
-    ,COALESCE(ve.DATA_NOTES, '') || 'Bulk upload as of ' || CURRENT_DATE AS DATA_NOTES
-    
-    ,COALESCE(ve.geom, s.geom) AS GEOM
-    ,ve.GlobalId
-FROM benthic_agg ba
-LEFT JOIN visits_existing ve
-    ON ba.STATION = ve.STATION
-    AND DATE(ba.VISIT_DATE) = DATE(ve.VISIT_DATE)
-    AND ba.VISIT_TYPE = ve.VISIT_TYPE
-LEFT JOIN stations s
-    ON ba.STATION = s.STATION
-WHERE
-    ve.GlobalId IS NULL
-    AND hash(ba.STATION, ba.VISIT_DATE, ba.VISIT_TYPE) NOT IN (
-        SELECT
-            hash(v.STATION, v.VISIT_DATE, v.VISIT_TYPE)
-        FROM visits v
-    )
-;
-FROM bc_visits
-"""
-con.sql(sql)
-
-# %%
-df_visits_insert_bc = con.sql(
-    "SELECT * FROM bc_visits WHERE GlobalID IS NULL AND GEOM IS NOT NULL"
-).df()
-
-if len(df_visits_insert_bc) > 0:
-    run_apply_edits(
-        fs_url,
-        0,
-        df_to_esri_features(df_visits_insert_bc, True, False, "GlobalID", 2248),
-        token,
-        False,
-    )
-
-# %%
-# Load existing data to insert/update fish counts
-token = get_portal_token()
-df_visits = featureservice_to_df(
-    "https://services1.arcgis.com/HbzrdBZjOwNHp70P/ArcGIS/rest/services/BioMon_EDIT/FeatureServer/0",
-    out_fields=["GlobalID", "STATION", "VISIT_TYPE", "VISIT_DATE", "DATA_NOTES"],
-    token=token,
-)
-
-df_fishcounts = featureservice_to_df(
-    "https://services1.arcgis.com/HbzrdBZjOwNHp70P/ArcGIS/rest/services/BioMon_EDIT/FeatureServer/2",
-    out_fields=["GlobalID", "GUID", "FC_SPECIES"],
-    token=token,
-)
-
-sql = """
-CREATE OR REPLACE TABLE visits_existing AS
-SELECT
-    * EXCLUDE (GEOMWKB, VISIT_DATE)
-    ,CAST(epoch_ms(VISIT_DATE::BIGINT)::DATE AS TIMESTAMP) + INTERVAL 12 HOUR AS VISIT_DATE
-    ,ST_GeomFromWKB(GEOMWKB) AS geom
-FROM df_visits;
-"""
-
-con.sql(sql)
-
-sql = """
-CREATE OR REPLACE TABLE fish_counts_existing AS
-SELECT
-    *
-FROM df_fishcounts;
-"""
-
-con.sql(sql)
-
-# %%
-sql = """
-CREATE OR REPLACE TABLE transformed_fish_counts AS
-WITH split_anomalies AS (
-    SELECT 
-        row_num
-        ,UNNEST(STRING_SPLIT(REPLACE(UPPER(ANOMALIES), '/', ','), ',')) AS token
-        ,TOTAL_ANOMALIES
-    FROM raw_fish_counts
-    WHERE ANOMALIES IS NOT NULL
-),
-parse_anomalies AS (
-    SELECT 
-        row_num
-        ,TRIM(token) AS token_clean
-        ,REGEXP_EXTRACT(TRIM(token), '^[0-9]+') AS num_part
-        ,REGEXP_EXTRACT(TRIM(token), '[A-Z_]+') AS code_part
-        ,TOTAL_ANOMALIES
-    FROM split_anomalies
-    WHERE TRIM(token) != ''
-),
-agg_anomalies AS (
-    SELECT 
-        row_num,
-        code_part,
-        COALESCE(CAST(NULLIF(num_part, '') AS INT), TOTAL_ANOMALIES) AS count_val
-    FROM parse_anomalies
-    WHERE code_part != ''
-),
-pivot_anomalies AS (
-    SELECT 
-        row_num,
-        SUM(CASE WHEN code_part = 'BL' THEN count_val ELSE 0 END) AS BL,
-        SUM(CASE WHEN code_part = 'RE' THEN count_val ELSE 0 END) AS RE,
-        SUM(CASE WHEN code_part = 'LE' THEN count_val ELSE 0 END) AS LE,
-        SUM(CASE WHEN code_part = 'GR' THEN count_val ELSE 0 END) AS GR,
-        SUM(CASE WHEN code_part = 'UL' THEN count_val ELSE 0 END) AS UL,
-        SUM(CASE WHEN code_part = 'DV' THEN count_val ELSE 0 END) AS DV,
-        SUM(CASE WHEN code_part = 'DM' THEN count_val ELSE 0 END) AS DM,
-        SUM(CASE WHEN code_part = 'SC' THEN count_val ELSE 0 END) AS SC,
-        SUM(CASE WHEN code_part = 'RS' THEN count_val ELSE 0 END) AS RS,
-        SUM(CASE WHEN code_part = 'DI' THEN count_val ELSE 0 END) AS DI,
-        SUM(CASE WHEN code_part = 'HM' THEN count_val ELSE 0 END) AS HM,
-        SUM(CASE WHEN code_part = 'BS' THEN count_val ELSE 0 END) AS BS,
-        SUM(CASE WHEN code_part = 'AW' THEN count_val ELSE 0 END) AS AW,
-        SUM(CASE WHEN code_part = 'EP' THEN count_val ELSE 0 END) AS EP,
-        SUM(CASE WHEN code_part = 'IK' THEN count_val ELSE 0 END) AS IK,
-        SUM(CASE WHEN code_part = 'FU' THEN count_val ELSE 0 END) AS FU,
-        SUM(CASE WHEN code_part = 'FI' THEN count_val ELSE 0 END) AS FI,
-        SUM(CASE WHEN code_part = 'CL' THEN count_val ELSE 0 END) AS CL,
-        SUM(CASE WHEN code_part = 'FD' THEN count_val ELSE 0 END) AS FD,
-        SUM(CASE WHEN code_part = 'HK' THEN count_val ELSE 0 END) AS HK,
-        SUM(CASE WHEN code_part = 'CT' THEN count_val ELSE 0 END) AS CT,
-        SUM(CASE WHEN code_part = 'AN' THEN count_val ELSE 0 END) AS AN,
-        SUM(CASE WHEN code_part = 'EC' THEN count_val ELSE 0 END) AS EC,
-        SUM(CASE WHEN code_part = 'EH' THEN count_val ELSE 0 END) AS EH,
-        SUM(CASE WHEN code_part = 'PO' THEN count_val ELSE 0 END) AS PO,
-        SUM(CASE WHEN code_part = 'OR_' THEN count_val ELSE 0 END) AS OR_,
-        SUM(CASE WHEN code_part = 'NO' THEN count_val ELSE 0 END) AS NO,
-        SUM(CASE WHEN code_part = 'CA' THEN count_val ELSE 0 END) AS CA,
-        SUM(CASE WHEN code_part = 'OT' THEN count_val ELSE 0 END) AS OT
-    FROM agg_anomalies
-    GROUP BY row_num
-)
-SELECT 
-    r.STATION,
-    r.VISIT_DATE,
-    r.FC_SPECIES,
-    r.PASS_1,
-    r.PASS_2,
-    r.TOTAL_COUNT,
-    r.TOTAL_ANOMALIES,
-    r.ANOMALIES,
-    COALESCE(p.BL, 0) AS BL,
-    COALESCE(p.RE, 0) AS RE,
-    COALESCE(p.LE, 0) AS LE,
-    COALESCE(p.GR, 0) AS GR,
-    COALESCE(p.UL, 0) AS UL,
-    COALESCE(p.DV, 0) AS DV,
-    COALESCE(p.DM, 0) AS DM,
-    COALESCE(p.SC, 0) AS SC,
-    COALESCE(p.RS, 0) AS RS,
-    COALESCE(p.DI, 0) AS DI,
-    COALESCE(p.HM, 0) AS HM,
-    COALESCE(p.BS, 0) AS BS,
-    COALESCE(p.AW, 0) AS AW,
-    COALESCE(p.EP, 0) AS EP,
-    COALESCE(p.IK, 0) AS IK,
-    COALESCE(p.FU, 0) AS FU,
-    COALESCE(p.FI, 0) AS FI,
-    COALESCE(p.CL, 0) AS CL,
-    COALESCE(p.FD, 0) AS FD,
-    COALESCE(p.HK, 0) AS HK,
-    COALESCE(p.CT, 0) AS CT,
-    COALESCE(p.AN, 0) AS AN,
-    COALESCE(p.EC, 0) AS EC,
-    COALESCE(p.EH, 0) AS EH,
-    COALESCE(p.PO, 0) AS PO,
-    COALESCE(p.OR_, 0) AS OR_,
-    COALESCE(p.NO, 0) AS NO,
-    COALESCE(p.CA, 0) AS CA,
-    COALESCE(p.OT, 0) AS OT
-    
-    , 'Yes' AS IND_ANOMALIES
-    ,ve.GlobalId AS GUID
-    
-    ,fc.GlobalId
-    
-FROM raw_fish_counts r
-LEFT JOIN pivot_anomalies p ON r.row_num = p.row_num
-LEFT JOIN visits_existing ve
-    ON r.STATION = ve.STATION
-    AND DATE(r.VISIT_DATE) = DATE(ve.VISIT_DATE)
-LEFT JOIN fish_counts_existing fc
-    ON ve.GlobalId = fc.GUID
-    AND r.FC_SPECIES = fc.FC_SPECIES
-ORDER BY r.row_num;
-FROM transformed_fish_counts
-"""
-
-con.sql(sql)
-
-# %%
-df_fish_upd = con.sql(
-    "SELECT * FROM transformed_fish_counts WHERE GlobalID IS NOT NULL"
-).df()
-df_fish_ins = con.sql(
-    "SELECT * EXCLUDE (GlobalID) FROM transformed_fish_counts WHERE GlobalID IS NULL"
-).df()
-
-print(
-    f"Fish counts to update: {len(df_fish_upd)} | Fish counts to insert: {len(df_fish_ins)}"
-)
-
-if len(df_fish_upd) > 0:
-    run_apply_edits(
-        fs_url,
-        2,
-        df_to_esri_features(df_fish_upd, False, True, "GlobalID"),
-        token,
-        True,
-    )
-if len(df_fish_ins) > 0:
-    run_apply_edits(
-        fs_url,
-        2,
-        df_to_esri_features(df_fish_ins, False, False, "GlobalID"),
-        token,
-        False,
-    )
+        arcpy.SetProgressorPosition(6)
+        arcpy.ResetProgressor()
+        logger.info("Biological Monitoring Excel import completed successfully.")
