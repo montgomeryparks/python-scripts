@@ -328,7 +328,7 @@ def duckdb_to_memory(
         out_name = f"tbl_{out_name}"
 
     if out_name != raw_out_name:
-        logger.warning(
+        logger.info(
             f"Output Dataset Name '{raw_out_name}' was scrubbed to '{out_name}' to meet workspace naming rules."
         )
 
@@ -401,7 +401,7 @@ def duckdb_to_memory(
             or base_col_lower in oid_mapping
         ) and col != shape_col:
             rename_map[col] = f"{base_col.upper()}_RESULT"
-            logger.warning(
+            logger.info(
                 f"Renaming intrinsic field '{col}' to '{rename_map[col]}' to avoid Geodatabase conflict."
             )
         elif "." in col and col != shape_col:

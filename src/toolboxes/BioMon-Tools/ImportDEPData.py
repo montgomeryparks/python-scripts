@@ -25,7 +25,6 @@ LAYERS = {
 
 DEFAULT_WKID = 2248
 
-# Expected sheets and their required core columns (MON_TYPE is handled optionally with a warning)
 REQUIRED_SCHEMA: dict[str, list[str]] = {
     "Benthics": [
         "STATION",
@@ -79,10 +78,6 @@ REQUIRED_SCHEMA: dict[str, list[str]] = {
 
 
 def validate_excel_schema(xlsx_path: str) -> tuple[list[str], list[str]]:
-    """
-    Validates required sheets and columns. Returns (fatal_errors, warnings).
-    MON_TYPE absence on PhysChem or Rhab generates a warning instead of a fatal error.
-    """
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -132,7 +127,6 @@ def validate_excel_schema(xlsx_path: str) -> tuple[list[str], list[str]]:
 
 
 def _refresh_visits_existing(con: duckdb.DuckDBPyConnection, token: str) -> None:
-    """Fetches the current Visits layer from the Feature Service and rebuilds visits_existing in DuckDB."""
     df_visits = featureservice_to_df(
         f"{URL_BIOMON_EDIT_FS}/{LAYERS['visits']}",
         out_fields=["GlobalID", "STATION", "VISIT_TYPE", "VISIT_DATE", "DATA_NOTES"],
@@ -347,22 +341,22 @@ class ImportBioMonDEPExcel:
                 CREATE OR REPLACE TABLE raw_benthics_counts AS
                 SELECT
                     TRIM(STATION::VARCHAR) AS STATION
-                    , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(CAST("DATE" AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
+                    , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST("DATE" AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
                     , REPLACE(LOWER(TAXA::VARCHAR), 'none', 'no benthics observed') AS BC_TAXA
-                    , NULLIF("#INDVS", 'NULL')::INT AS INDIVIDUALS
-                    , NULLIF(trays, 'NULL')::INT AS TRAYS
-                    , NULLIF("#GRIDS", 'NULL')::INT AS GRIDS
+                    , TRY_CAST(NULLIF("#INDVS", 'NULL') AS INTEGER) AS INDIVIDUALS
+                    , TRY_CAST(NULLIF(trays, 'NULL') AS INTEGER) AS TRAYS
+                    , TRY_CAST(NULLIF("#GRIDS", 'NULL') AS INTEGER) AS GRIDS
                 FROM read_xlsx('{safe_target_file}', sheet='Benthics', all_varchar=true);
 
                 CREATE OR REPLACE TABLE raw_fish_counts AS
                 SELECT
                     TRIM(STATION::VARCHAR) AS STATION
-                    , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
+                    , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
                     , REPLACE(LOWER(SPECIES::VARCHAR), 'none', 'no fish observed') AS FC_SPECIES
-                    , PASS1::INT AS PASS_1
-                    , PASS2::INT AS PASS_2
-                    , PASS_1 + PASS_2 AS TOTAL_COUNT
-                    , ANOMALIES::INT AS TOTAL_ANOMALIES
+                    , TRY_CAST(NULLIF(PASS1, 'NULL') AS INTEGER) AS PASS_1
+                    , TRY_CAST(NULLIF(PASS2, 'NULL') AS INTEGER) AS PASS_2
+                    , TRY_CAST(NULLIF(PASS1, 'NULL') AS INTEGER) + TRY_CAST(NULLIF(PASS2, 'NULL') AS INTEGER) AS TOTAL_COUNT
+                    , TRY_CAST(NULLIF(ANOMALIES, 'NULL') AS INTEGER) AS TOTAL_ANOMALIES
                     , CASE
                         WHEN ANOMALIES_TYPE::VARCHAR = 'NULL' THEN NULL
                         ELSE UPPER(ANOMALIES_TYPE::VARCHAR)
@@ -373,23 +367,23 @@ class ImportBioMonDEPExcel:
                 CREATE OR REPLACE TABLE raw_phys_chem AS
                 SELECT
                     TRIM(STATION::VARCHAR) AS STATION
-                    , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
+                    , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
                     , {pc_mon_type_expr} AS VISIT_TYPE
-                    , (NULLIF(AIRTEMP, 'NULL')::INTEGER * 9 / 5 + 32) AS PC_AIRTEMP_F
-                    , NULLIF(AIRTEMP, 'NULL')::INTEGER AS PC_AIRTEMP_C
-                    , NULLIF(H2OTEMP_C, 'NULL')::FLOAT AS PC_WATERTEMP_C
-                    , NULLIF(PH, 'NULL')::FLOAT AS PC_PH
-                    , NULLIF(DISOXY, 'NULL')::FLOAT AS PC_DO_CONC
-                    , NULLIF("%_SAT", 'NULL')::FLOAT AS PC_DO_SAT
-                    , NULLIF(CONDUCT, 'NULL')::FLOAT AS PC_COND
-                    , NULLIF(Turbidity, 'NULL')::FLOAT AS PC_TURB
+                    , (TRY_CAST(NULLIF(AIRTEMP, 'NULL') AS INTEGER) * 9 / 5 + 32) AS PC_AIRTEMP_F
+                    , TRY_CAST(NULLIF(AIRTEMP, 'NULL') AS INTEGER) AS PC_AIRTEMP_C
+                    , TRY_CAST(NULLIF(H2OTEMP_C, 'NULL') AS FLOAT) AS PC_WATERTEMP_C
+                    , TRY_CAST(NULLIF(PH, 'NULL') AS FLOAT) AS PC_PH
+                    , TRY_CAST(NULLIF(DISOXY, 'NULL') AS FLOAT) AS PC_DO_CONC
+                    , TRY_CAST(NULLIF("%_SAT", 'NULL') AS FLOAT) AS PC_DO_SAT
+                    , TRY_CAST(NULLIF(CONDUCT, 'NULL') AS FLOAT) AS PC_COND
+                    , TRY_CAST(NULLIF(Turbidity, 'NULL') AS FLOAT) AS PC_TURB
                     , CASE 
                         WHEN NULLIF(TRIM(MonitoringTime), 'NULL') IS NULL THEN NULL
                         WHEN TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) IS NOT NULL 
                              AND TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) >= 0 
                              AND TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) < 1
                         THEN STRFTIME(
-                            TIMESTAMP '2000-01-01 00:00:00' + INTERVAL (ROUND(CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) * 86400)) SECOND, 
+                            TIMESTAMP '2000-01-01 00:00:00' + INTERVAL (ROUND(TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) * 86400)) SECOND, 
                             '%H%M'
                         )
                         ELSE LPAD(REGEXP_REPLACE(NULLIF(TRIM(MonitoringTime), 'NULL'), '[^0-9]', '', 'g'), 4, '0')
@@ -400,21 +394,21 @@ class ImportBioMonDEPExcel:
                 CREATE OR REPLACE TABLE raw_rhab AS
                 SELECT
                     TRIM(STATION::VARCHAR) AS STATION
-                    , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
+                    , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
                     , {rhab_mon_type_expr} AS VISIT_TYPE
-                    , NULLIF(INSTR_COVER, 'NULL')::INTEGER AS RHAB_INSTREAMCOVER
-                    , NULLIF(EPI_SUBSTR, 'NULL')::INTEGER AS RHAB_EPISUBSTRATE
-                    , NULLIF(EMBEDD, 'NULL')::INTEGER AS RHAB_EMBEDDEDNESS
-                    , NULLIF(CH_ALTER, 'NULL')::INTEGER AS RHAB_CHANNELALT
-                    , NULLIF(SED_DEPOSIT, 'NULL')::INTEGER AS RHAB_SEDDEPOSIT
-                    , NULLIF(RIFFLE_FREQ, 'NULL')::INTEGER AS RHAB_RIFFLEFREQ
-                    , NULLIF(CHAN_FLOW, 'NULL')::INTEGER AS RHAB_CHANNELFLOWSTATUS
-                    , NULLIF(LB_BANKVEG, 'NULL')::INTEGER AS RHAB_VEG_LB
-                    , NULLIF(RB_BANKVEG, 'NULL')::INTEGER AS RHAB_VEG_RB
-                    , NULLIF(LB_BANKSTAB, 'NULL')::INTEGER AS RHAB_STABILITY_LB
-                    , NULLIF(RB_BANKSTAB, 'NULL')::INTEGER AS RHAB_STABILITY_RB
-                    , NULLIF(LB_BUFFER, 'NULL')::INTEGER AS RHAB_BUFFER_LB
-                    , NULLIF(RB_BUFFER, 'NULL')::INTEGER AS RHAB_BUFFER_RB
+                    , TRY_CAST(NULLIF(INSTR_COVER, 'NULL') AS INTEGER) AS RHAB_INSTREAMCOVER
+                    , TRY_CAST(NULLIF(EPI_SUBSTR, 'NULL') AS INTEGER) AS RHAB_EPISUBSTRATE
+                    , TRY_CAST(NULLIF(EMBEDD, 'NULL') AS INTEGER) AS RHAB_EMBEDDEDNESS
+                    , TRY_CAST(NULLIF(CH_ALTER, 'NULL') AS INTEGER) AS RHAB_CHANNELALT
+                    , TRY_CAST(NULLIF(SED_DEPOSIT, 'NULL') AS INTEGER) AS RHAB_SEDDEPOSIT
+                    , TRY_CAST(NULLIF(RIFFLE_FREQ, 'NULL') AS INTEGER) AS RHAB_RIFFLEFREQ
+                    , TRY_CAST(NULLIF(CHAN_FLOW, 'NULL') AS INTEGER) AS RHAB_CHANNELFLOWSTATUS
+                    , TRY_CAST(NULLIF(LB_BANKVEG, 'NULL') AS INTEGER) AS RHAB_VEG_LB
+                    , TRY_CAST(NULLIF(RB_BANKVEG, 'NULL') AS INTEGER) AS RHAB_VEG_RB
+                    , TRY_CAST(NULLIF(LB_BANKSTAB, 'NULL') AS INTEGER) AS RHAB_STABILITY_LB
+                    , TRY_CAST(NULLIF(RB_BANKSTAB, 'NULL') AS INTEGER) AS RHAB_STABILITY_RB
+                    , TRY_CAST(NULLIF(LB_BUFFER, 'NULL') AS INTEGER) AS RHAB_BUFFER_LB
+                    , TRY_CAST(NULLIF(RB_BUFFER, 'NULL') AS INTEGER) AS RHAB_BUFFER_RB
                     , NULLIF(COMMENTS, 'NULL')::VARCHAR AS RHAB_NOTES
                 FROM _stg_rhab;
             """)
@@ -494,7 +488,53 @@ class ImportBioMonDEPExcel:
                 WHERE pc.STATION IS NOT NULL OR rhab.STATION IS NOT NULL;
             """)
 
-            # Check for +/- 1 day date discrepancies (df_off_by_one)
+            # ---- DATA VALIDATION BLOCK ----
+            con.execute("""
+                ALTER TABLE visits ADD COLUMN IMPORT_STATUS VARCHAR DEFAULT 'OK';
+                ALTER TABLE visits ADD COLUMN IMPORT_MESSAGE VARCHAR DEFAULT '';
+
+                UPDATE visits 
+                SET IMPORT_STATUS = 'ERROR'
+                    , IMPORT_MESSAGE = CONCAT_WS(' | ', NULLIF(IMPORT_MESSAGE, ''), 'Invalid PH (Must be 0-14)') 
+                WHERE PC_PH < 0 OR PC_PH > 14;
+
+                UPDATE visits 
+                SET IMPORT_STATUS = 'ERROR'
+                    , IMPORT_MESSAGE = CONCAT_WS(' | ', NULLIF(IMPORT_MESSAGE, ''), 'Invalid Turbidity (Must be 0-10)') 
+                WHERE PC_TURB < 0 OR PC_TURB > 10;
+
+                UPDATE visits
+                SET IMPORT_STATUS = 'ERROR'
+                    , IMPORT_MESSAGE = CONCAT_WS(' | ', NULLIF(IMPORT_MESSAGE, ''), 'Invalid MonitoringTime (Must be HHMM)')
+                WHERE PC_TIME IS NOT NULL 
+                  AND (LENGTH(PC_TIME) != 4 
+                       OR TRY_CAST(SUBSTR(PC_TIME, 1, 2) AS INT) >= 24 
+                       OR TRY_CAST(SUBSTR(PC_TIME, 3, 2) AS INT) >= 60);
+            """)
+
+            rhab_bounds = [
+                ("RHAB_INSTREAMCOVER", 20),
+                ("RHAB_EPISUBSTRATE", 20),
+                ("RHAB_EMBEDDEDNESS", 20),
+                ("RHAB_CHANNELALT", 20),
+                ("RHAB_SEDDEPOSIT", 20),
+                ("RHAB_RIFFLEFREQ", 20),
+                ("RHAB_CHANNELFLOWSTATUS", 20),
+                ("RHAB_VEG_LB", 20),
+                ("RHAB_VEG_RB", 20),
+                ("RHAB_STABILITY_LB", 10),
+                ("RHAB_STABILITY_RB", 10),
+                ("RHAB_BUFFER_LB", 10),
+                ("RHAB_BUFFER_RB", 10),
+            ]
+            for col, max_val in rhab_bounds:
+                con.execute(f"""
+                    UPDATE visits 
+                    SET IMPORT_STATUS = 'ERROR'
+                        , IMPORT_MESSAGE = CONCAT_WS(' | ', NULLIF(IMPORT_MESSAGE, ''), 'Invalid {col} (0-{max_val})') 
+                    WHERE {col} < 0 OR {col} > {max_val};
+                """)
+
             df_off_by_one = con.sql("""
                 SELECT
                     ve.GlobalID
@@ -515,17 +555,32 @@ class ImportBioMonDEPExcel:
             """).df()
 
             if not df_off_by_one.empty:
-                for _, row in df_off_by_one.iterrows():
-                    logger.warning(
-                        f"Potential 1-day date mismatch detected for Station {row['STATION']} ({row['VISIT_TYPE']}): "
-                        f"Existing Date = {row['EXISTING_VISIT_DATE']}, Excel Import Date = {row['IMPORT_DATE']}"
-                    )
+                con.execute("""
+                    UPDATE visits
+                    SET IMPORT_STATUS = CASE WHEN IMPORT_STATUS = 'ERROR' THEN 'ERROR' ELSE 'WARNING' END
+                        , IMPORT_MESSAGE = CONCAT_WS(' | ', NULLIF(IMPORT_MESSAGE, ''), 'Possible +/- 1 day date mismatch with existing visit')
+                    WHERE (STATION, VISIT_TYPE, DATE(VISIT_DATE)) IN (
+                        SELECT STATION, VISIT_TYPE, DATE(IMPORT_DATE) FROM df_off_by_one
+                    );
+                """)
+
+            has_validation_errors = (
+                con.execute(
+                    "SELECT COUNT(*) FROM visits WHERE IMPORT_STATUS = 'ERROR'"
+                ).fetchone()[0]
+                > 0
+            )
+            if has_validation_errors and not validate_only:
+                logger.warning(
+                    "Data validation errors found in primary visits! Forcing Preview Mode so you can inspect the errors in the active map."
+                )
+                validate_only = True
 
             df_visits_update = con.sql(
-                "SELECT * FROM visits WHERE GlobalID IS NOT NULL"
+                "SELECT * EXCLUDE (IMPORT_STATUS, IMPORT_MESSAGE) FROM visits WHERE GlobalID IS NOT NULL AND IMPORT_STATUS != 'ERROR'"
             ).df()
             df_visits_insert = con.sql(
-                "SELECT * EXCLUDE (GlobalID) FROM visits WHERE GlobalID IS NULL"
+                "SELECT * EXCLUDE (GlobalID, IMPORT_STATUS, IMPORT_MESSAGE) FROM visits WHERE GlobalID IS NULL AND IMPORT_STATUS != 'ERROR'"
             ).df()
 
             if not validate_only:
@@ -560,7 +615,7 @@ class ImportBioMonDEPExcel:
                             , DATA_NOTES
                             , GEOM
                         FROM visits
-                        WHERE GlobalID IS NULL;
+                        WHERE GlobalID IS NULL AND IMPORT_STATUS != 'ERROR';
                     """)
 
             arcpy.SetProgressorPosition(4)
@@ -603,7 +658,7 @@ class ImportBioMonDEPExcel:
                     ON fa.STATION = s.STATION
                 WHERE ve.GlobalID IS NULL
                     AND hash(fa.STATION, fa.VISIT_DATE, fa.VISIT_TYPE) NOT IN (
-                        SELECT hash(v.STATION, v.VISIT_DATE, v.VISIT_TYPE) FROM visits v
+                        SELECT hash(v.STATION, v.VISIT_DATE, v.VISIT_TYPE) FROM visits v WHERE IMPORT_STATUS != 'ERROR'
                     );
 
                 CREATE OR REPLACE TABLE bc_visits AS
@@ -637,7 +692,7 @@ class ImportBioMonDEPExcel:
                     ON ba.STATION = s.STATION
                 WHERE ve.GlobalID IS NULL
                     AND hash(ba.STATION, ba.VISIT_DATE, ba.VISIT_TYPE) NOT IN (
-                        SELECT hash(v.STATION, v.VISIT_DATE, v.VISIT_TYPE) FROM visits v
+                        SELECT hash(v.STATION, v.VISIT_DATE, v.VISIT_TYPE) FROM visits v WHERE IMPORT_STATUS != 'ERROR'
                     );
             """)
 
@@ -850,21 +905,6 @@ class ImportBioMonDEPExcel:
                 preview_outputs = []
                 exclude_cols = {"x", "y", "row_num"}
 
-                con.execute("""
-                    ALTER TABLE visits ADD COLUMN IMPORT_STATUS VARCHAR;
-                    ALTER TABLE visits ADD COLUMN IMPORT_MESSAGE VARCHAR;
-                    UPDATE visits SET IMPORT_STATUS = 'OK', IMPORT_MESSAGE = 'Ready for import.';
-                """)
-                if not df_off_by_one.empty:
-                    con.execute("""
-                        UPDATE visits
-                        SET IMPORT_STATUS = 'WARNING'
-                            , IMPORT_MESSAGE = 'Possible +/- 1 day date mismatch with existing visit.'
-                        WHERE (STATION, VISIT_TYPE, DATE(VISIT_DATE)) IN (
-                            SELECT STATION, VISIT_TYPE, DATE(IMPORT_DATE) FROM df_off_by_one
-                        );
-                    """)
-
                 path_v_upd = duckdb_to_memory(
                     con,
                     "SELECT * FROM visits WHERE GlobalID IS NOT NULL",
@@ -936,9 +976,14 @@ class ImportBioMonDEPExcel:
 
                 if preview_outputs:
                     parameters[2].value = preview_outputs
-                    logger.info(
-                        f"Validation complete. Added {len(preview_outputs)} preview dataset(s) to the active map."
-                    )
+                    if has_validation_errors:
+                        logger.warning(
+                            f"Validation complete. Please review the {len(preview_outputs)} preview dataset(s) in the active map for highlighted schema or domain errors."
+                        )
+                    else:
+                        logger.info(
+                            f"Validation complete. Added {len(preview_outputs)} preview dataset(s) to the active map."
+                        )
 
         except Exception as e:
             err_trace = traceback.format_exc()
@@ -952,7 +997,8 @@ class ImportBioMonDEPExcel:
                         ALTER TABLE visits ADD COLUMN IF NOT EXISTS IMPORT_MESSAGE VARCHAR;
                         UPDATE visits
                         SET IMPORT_STATUS = 'ERROR'
-                            , IMPORT_MESSAGE = '{str(e).replace("'", "''")}';
+                            , IMPORT_MESSAGE = CONCAT_WS(' | ', NULLIF(IMPORT_MESSAGE, ''), '{str(e).replace("'", "''")}')
+                        WHERE IMPORT_STATUS != 'ERROR';
                     """)
                     error_preview = duckdb_to_memory(
                         con,
@@ -964,8 +1010,8 @@ class ImportBioMonDEPExcel:
                     )
                     if error_preview:
                         parameters[2].value = [error_preview]
-                        logger.error(
-                            f"Error inspection layer written to memory: {error_preview}"
+                        logger.warning(
+                            f"An error occurred mid-processing. Partial inspection layer written to memory: {error_preview}"
                         )
             except (duckdb.Error, RuntimeError, ValueError) as mem_err:
                 logger.error(f"Could not write error state to memory: {mem_err}")
