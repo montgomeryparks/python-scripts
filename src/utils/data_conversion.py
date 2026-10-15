@@ -1,9 +1,11 @@
 import json
 import logging
 import math
-from typing import Any
+import re
+from typing import Any, Literal
 
 import arcpy
+import duckdb
 import pandas as pd
 import requests
 import urllib3
@@ -302,3 +304,202 @@ def map_pandas_dtype_to_arcpy(dtype):
     elif pd.api.types.is_datetime64_any_dtype(dtype):
         return "DATE"
     return "TEXT"
+
+
+def duckdb_to_memory(
+    con: duckdb.DuckDBPyConnection,
+    source_query_or_table: str,
+    raw_out_name: str,
+    spatial_ref: Any = 2248,
+    active_map: Any = None,
+    oid_mapping: dict[str, bool] | None = None,
+    exclude_cols: set[str] | None = None,
+) -> str | None:
+    """
+    Executes a DuckDB query or reads a DuckDB table/view, auto-detects native DuckDB GEOMETRY
+    columns and types, and writes the result to an ArcGIS Pro 'memory' Feature Class or Table.
+    Returns the 'memory\\<out_name>' path, or None if 0 rows are returned.
+    """
+    oid_mapping = oid_mapping or {}
+    exclude_lower = {c.lower() for c in (exclude_cols or set())}
+
+    out_name = re.sub(r"[^a-zA-Z0-9_]", "_", raw_out_name.strip())
+    if re.match(r"^[0-9]", out_name):
+        out_name = f"tbl_{out_name}"
+
+    if out_name != raw_out_name:
+        logger.warning(
+            f"Output Dataset Name '{raw_out_name}' was scrubbed to '{out_name}' to meet workspace naming rules."
+        )
+
+    is_select = bool(
+        re.match(r"^\s*(SELECT|WITH)\b", source_query_or_table, re.IGNORECASE)
+    )
+    temp_tbl = "_duckdb_to_mem_tmp"
+    if is_select:
+        con.execute(
+            f"CREATE OR REPLACE TEMP TABLE {temp_tbl} AS {source_query_or_table}"
+        )
+    else:
+        con.execute(
+            f"CREATE OR REPLACE TEMP TABLE {temp_tbl} AS SELECT * FROM {source_query_or_table}"
+        )
+
+    col_info = con.execute(f"PRAGMA table_info('{temp_tbl}')").fetchall()
+
+    select_cols: list[str] = []
+    spatial_cols: list[str] = []
+
+    for col in col_info:
+        col_name = str(col[1])
+        col_type = str(col[2])
+        if col_name.lower() in exclude_lower and col_type != "GEOMETRY":
+            continue
+        if col_type == "GEOMETRY":
+            spatial_cols.append(col_name)
+            select_cols.append(f'ST_AsWKB("{col_name}") AS "{col_name}"')
+        else:
+            select_cols.append(f'"{col_name}"')
+
+    if len(spatial_cols) > 1:
+        raise ValueError(
+            f"Multiple geometry columns returned ({', '.join(spatial_cols)}). ArcGIS only supports one geometry field per dataset."
+        )
+
+    if not select_cols:
+        return None
+
+    final_query = f"SELECT {', '.join(select_cols)} FROM {temp_tbl}"
+    res_df = con.execute(final_query).df()
+
+    if res_df.empty:
+        return None
+
+    out_path = f"memory\\{out_name}"
+
+    if active_map is not None:
+        for map_lyr in active_map.listLayers():
+            if map_lyr.name == out_name:
+                active_map.removeLayer(map_lyr)
+        for map_tbl in active_map.listTables():
+            if map_tbl.name == out_name:
+                active_map.removeTable(map_tbl)
+
+    if arcpy.Exists(out_path):
+        arcpy.management.Delete(out_path)
+
+    res_df.columns = res_df.columns.str.strip()
+    shape_col = spatial_cols[0].strip() if spatial_cols else None
+
+    rename_map: dict[str, str] = {}
+    for col in res_df.columns:
+        base_col = col.split(".")[-1]
+        base_col_lower = base_col.lower()
+
+        if (
+            base_col_lower in {"objectid", "fid", "oid", "globalid"}
+            or base_col_lower in oid_mapping
+        ) and col != shape_col:
+            rename_map[col] = f"{base_col.upper()}_RESULT"
+            logger.warning(
+                f"Renaming intrinsic field '{col}' to '{rename_map[col]}' to avoid Geodatabase conflict."
+            )
+        elif "." in col and col != shape_col:
+            rename_map[col] = col.replace(".", "_")
+
+    if rename_map:
+        res_df = res_df.rename(columns=rename_map)
+
+    duckdb_geom_map: dict[
+        str, Literal["POINT", "MULTIPOINT", "POLYGON", "POLYLINE"]
+    ] = {
+        "POINT": "POINT",
+        "LINESTRING": "POLYLINE",
+        "POLYGON": "POLYGON",
+        "MULTIPOINT": "MULTIPOINT",
+        "MULTILINESTRING": "POLYLINE",
+        "MULTIPOLYGON": "POLYGON",
+        "GEOMETRYCOLLECTION": "POLYGON",
+    }
+
+    is_spatial_output = False
+    out_geom: Literal["POINT", "MULTIPOINT", "POLYGON", "POLYLINE"] = "POLYGON"
+    sr_obj = (
+        arcpy.SpatialReference(spatial_ref)
+        if isinstance(spatial_ref, int)
+        else spatial_ref
+    )
+
+    if shape_col and shape_col in res_df.columns:
+        try:
+            geom_query = f'SELECT ST_GeometryType("{shape_col}") FROM {temp_tbl} WHERE "{shape_col}" IS NOT NULL LIMIT 1'
+            geom_res = con.execute(geom_query).fetchone()
+            if geom_res and geom_res[0]:
+                out_geom = duckdb_geom_map.get(str(geom_res[0]), "POLYGON")
+        except duckdb.Error:
+            logger.warning(
+                "Unable to determine output geometry type; defaulting to POLYGON.",
+                exc_info=True,
+            )
+
+        arcpy.management.CreateFeatureclass(
+            "memory", out_name, out_geom, spatial_reference=sr_obj
+        )
+        is_spatial_output = True
+    else:
+        arcpy.management.CreateTable("memory", out_name)
+        if shape_col and shape_col in res_df.columns:
+            res_df.drop(columns=[shape_col], inplace=True)
+
+    attribute_cols = [c for c in res_df.columns if c != shape_col]
+
+    for col in attribute_cols:
+        original_col = next((k for k, v in rename_map.items() if v == col), col)
+        original_base_lower = original_col.split(".")[-1].lower()
+
+        if original_base_lower in oid_mapping:
+            field_type = "BIGINTEGER" if oid_mapping[original_base_lower] else "LONG"
+        else:
+            field_type = map_pandas_dtype_to_arcpy(res_df[col].dtype)
+
+        arcpy.management.AddField(
+            out_path,
+            col,
+            field_type,
+            field_length=500 if field_type == "TEXT" else None,
+        )
+
+    def _clean_val(val: Any) -> Any:
+        if pd.isna(val) or val is None:
+            return None
+        if isinstance(val, pd.Timestamp):
+            return val.to_pydatetime()
+        if hasattr(val, "item"):
+            return val.item()
+        return val
+
+    if is_spatial_output:
+        assert shape_col is not None
+        insert_fields = attribute_cols + ["SHAPE@"]
+        with arcpy.da.InsertCursor(out_path, insert_fields) as inserter:
+            for _, row in res_df.iterrows():
+                wkb_val = row[shape_col]
+                geom = (
+                    arcpy.FromWKB(bytes(wkb_val))
+                    if pd.notnull(wkb_val) and wkb_val is not None
+                    else None
+                )
+                attrs = [_clean_val(row[c]) for c in attribute_cols]
+                inserter.insertRow(attrs + [geom])
+        logger.info(
+            f"Created Spatial Layer: {out_path} ({len(res_df)} rows, Auto-detected: {out_geom})"
+        )
+    else:
+        if attribute_cols:
+            with arcpy.da.InsertCursor(out_path, attribute_cols) as inserter:
+                for _, row in res_df.iterrows():
+                    attrs = [_clean_val(row[c]) for c in attribute_cols]
+                    inserter.insertRow(attrs)
+        logger.info(f"Created Table: {out_path} ({len(res_df)} rows)")
+
+    return out_path

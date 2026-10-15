@@ -10,6 +10,7 @@ from src.utils.auth import get_portal_token
 from src.utils.constants import URL_BIOMON_EDIT_FS, URL_BIOMON_STATIONS
 from src.utils.data_conversion import (
     df_to_esri_features,
+    duckdb_to_memory,
     featureservice_to_df,
     run_apply_edits,
 )
@@ -158,7 +159,8 @@ class ImportBioMonDEPExcel:
         self.description = (
             "Ingests an MCDEP Biological Monitoring data exchange Excel workbook (.xlsx) "
             "(Benthics, Fish, PhysChem, and Rhab sheets) and upserts Visit and Fish Count "
-            "records into the hosted BioMon_EDIT Feature Service."
+            "records into the hosted BioMon_EDIT Feature Service, or outputs preview "
+            "layers/tables to the active map for pre-import validation."
         )
         self.canRunInBackground = False
 
@@ -170,9 +172,27 @@ class ImportBioMonDEPExcel:
             parameterType="Required",
             direction="Input",
         )
-        param_xlsx.filter.list = ["xlsx"]  # pyright: ignore[reportOptionalMemberAccess]
+        param_xlsx.filter.list = ["xlsx"]
 
-        return [param_xlsx]
+        param_validate_only = arcpy.Parameter(
+            displayName="Validate Only (Preview Inserts/Updates in Active Map)",
+            name="validate_only",
+            datatype="GPBoolean",
+            parameterType="Optional",
+            direction="Input",
+        )
+        param_validate_only.value = False
+
+        param_derived_out = arcpy.Parameter(
+            displayName="Preview Datasets",
+            name="out_preview_datasets",
+            datatype=["GPFeatureLayer", "GPTableView"],
+            parameterType="Derived",
+            direction="Output",
+            multiValue=True,
+        )
+
+        return [param_xlsx, param_validate_only, param_derived_out]
 
     def isLicensed(self):
         return True
@@ -210,10 +230,20 @@ class ImportBioMonDEPExcel:
             logger.handlers.clear()
             setup_arcgis_logging(logging.DEBUG, "biomon_tools")
 
+        arcpy.env.overwriteOutput = True
+
         target_file = parameters[0].valueAsText
+        validate_only = bool(parameters[1].value)
         safe_target_file = target_file.replace("\\", "/")
 
-        logger.info(f"Starting Biological Monitoring data import for: {target_file}")
+        mode_str = (
+            "VALIDATION / PREVIEW MODE (No Feature Service edits will be applied)"
+            if validate_only
+            else "LIVE IMPORT MODE"
+        )
+        logger.info(
+            f"Starting Biological Monitoring data import [{mode_str}] for: {target_file}"
+        )
         arcpy.SetProgressor(
             "step", "Validating Excel schema and initializing...", 0, 6, 1
         )
@@ -225,6 +255,18 @@ class ImportBioMonDEPExcel:
             raise arcpy.ExecuteError(
                 "Execution halted due to missing required sheets or fields in the input Excel workbook."
             )
+
+        active_map = None
+        if validate_only:
+            try:
+                aprx = arcpy.mp.ArcGISProject("CURRENT")
+                active_map = aprx.activeMap
+            except OSError:
+                active_map = None
+            if not active_map:
+                logger.warning(
+                    "Validate Only mode is checked, but no active map was detected in the current project."
+                )
 
         # -----------------------------------------------------------------
         # STEP 1: Authentication & DuckDB Initialization
@@ -369,7 +411,7 @@ class ImportBioMonDEPExcel:
         # -----------------------------------------------------------------
         # STEP 4: Construct & Upsert Primary Visits (PhysChem & Rhab)
         # -----------------------------------------------------------------
-        arcpy.SetProgressorLabel("Processing and upserting PhysChem & Rhab Visits...")
+        arcpy.SetProgressorLabel("Processing PhysChem & Rhab Visits...")
         con.execute("""
             CREATE OR REPLACE TABLE visits AS
             SELECT
@@ -507,28 +549,43 @@ class ImportBioMonDEPExcel:
             f"Primary Visits (PhysChem/Rhab) -> Updates: {len(df_visits_update)} | Inserts: {len(df_visits_insert)}"
         )
 
-        if len(df_visits_update) > 0:
-            run_apply_edits(
-                URL_BIOMON_EDIT_FS,
-                LAYERS["visits"],
-                df_to_esri_features(df_visits_update, False, True, "GlobalID"),
-                token,
-                True,
-            )
-        if len(df_visits_insert) > 0:
-            run_apply_edits(
-                URL_BIOMON_EDIT_FS,
-                LAYERS["visits"],
-                df_to_esri_features(
-                    df_visits_insert, True, False, "GlobalID", DEFAULT_WKID
-                ),
-                token,
-                False,
-            )
-            logger.info(
-                "Refreshing existing Visits from Feature Service after PhysChem/Rhab inserts..."
-            )
-            _refresh_visits_existing(con, token)
+        if not validate_only:
+            if len(df_visits_update) > 0:
+                run_apply_edits(
+                    URL_BIOMON_EDIT_FS,
+                    LAYERS["visits"],
+                    df_to_esri_features(df_visits_update, False, True, "GlobalID"),
+                    token,
+                    True,
+                )
+            if len(df_visits_insert) > 0:
+                run_apply_edits(
+                    URL_BIOMON_EDIT_FS,
+                    LAYERS["visits"],
+                    df_to_esri_features(
+                        df_visits_insert, True, False, "GlobalID", DEFAULT_WKID
+                    ),
+                    token,
+                    False,
+                )
+                logger.info(
+                    "Refreshing existing Visits from Feature Service after PhysChem/Rhab inserts..."
+                )
+                _refresh_visits_existing(con, token)
+        else:
+            if len(df_visits_insert) > 0:
+                con.execute("""
+                    INSERT INTO visits_existing (GlobalID, STATION, VISIT_TYPE, VISIT_DATE, DATA_NOTES, geom)
+                    SELECT
+                        'PREVIEW_NEW_VISIT_' || STATION || '_' || STRFTIME(VISIT_DATE, '%Y%m%d') AS GlobalID,
+                        STATION,
+                        VISIT_TYPE,
+                        VISIT_DATE,
+                        DATA_NOTES,
+                        GEOM
+                    FROM visits
+                    WHERE GlobalID IS NULL;
+                """)
 
         arcpy.SetProgressorPosition(4)
 
@@ -536,7 +593,7 @@ class ImportBioMonDEPExcel:
         # STEP 5: Ensure Parent Visits Exist for Fish (BIF) & Benthic (BIB)
         # -----------------------------------------------------------------
         arcpy.SetProgressorLabel(
-            "Checking & creating supplemental Visits for Fish (BIF) and Benthics (BIB)..."
+            "Checking supplemental Visits for Fish (BIF) and Benthics (BIB)..."
         )
         con.execute("""
             CREATE OR REPLACE TABLE fc_visits AS
@@ -619,49 +676,69 @@ class ImportBioMonDEPExcel:
         df_visits_insert_fc = con.sql(
             "SELECT * EXCLUDE (GlobalID) FROM fc_visits WHERE GlobalID IS NULL AND GEOM IS NOT NULL"
         ).df()
-        if len(df_visits_insert_fc) > 0:
-            logger.info(
-                f"Inserting {len(df_visits_insert_fc)} supplemental Fish (BIF) Visits..."
-            )
-            run_apply_edits(
-                URL_BIOMON_EDIT_FS,
-                LAYERS["visits"],
-                df_to_esri_features(
-                    df_visits_insert_fc, True, False, "GlobalID", DEFAULT_WKID
-                ),
-                token,
-                False,
-            )
-
         df_visits_insert_bc = con.sql(
             "SELECT * EXCLUDE (GlobalID) FROM bc_visits WHERE GlobalID IS NULL AND GEOM IS NOT NULL"
         ).df()
-        if len(df_visits_insert_bc) > 0:
-            logger.info(
-                f"Inserting {len(df_visits_insert_bc)} supplemental Benthic (BIB) Visits..."
-            )
-            run_apply_edits(
-                URL_BIOMON_EDIT_FS,
-                LAYERS["visits"],
-                df_to_esri_features(
-                    df_visits_insert_bc, True, False, "GlobalID", DEFAULT_WKID
-                ),
-                token,
-                False,
-            )
 
-        if len(df_visits_insert_fc) > 0 or len(df_visits_insert_bc) > 0:
-            logger.info(
-                "Refreshing existing Visits from Feature Service after supplemental Visit inserts..."
-            )
-            _refresh_visits_existing(con, token)
+        logger.info(
+            f"Supplemental Visits -> Fish (BIF) Inserts: {len(df_visits_insert_fc)} | Benthic (BIB) Inserts: {len(df_visits_insert_bc)}"
+        )
+
+        if not validate_only:
+            if len(df_visits_insert_fc) > 0:
+                logger.info(
+                    f"Inserting {len(df_visits_insert_fc)} supplemental Fish (BIF) Visits..."
+                )
+                run_apply_edits(
+                    URL_BIOMON_EDIT_FS,
+                    LAYERS["visits"],
+                    df_to_esri_features(
+                        df_visits_insert_fc, True, False, "GlobalID", DEFAULT_WKID
+                    ),
+                    token,
+                    False,
+                )
+
+            if len(df_visits_insert_bc) > 0:
+                logger.info(
+                    f"Inserting {len(df_visits_insert_bc)} supplemental Benthic (BIB) Visits..."
+                )
+                run_apply_edits(
+                    URL_BIOMON_EDIT_FS,
+                    LAYERS["visits"],
+                    df_to_esri_features(
+                        df_visits_insert_bc, True, False, "GlobalID", DEFAULT_WKID
+                    ),
+                    token,
+                    False,
+                )
+
+            if len(df_visits_insert_fc) > 0 or len(df_visits_insert_bc) > 0:
+                logger.info(
+                    "Refreshing existing Visits from Feature Service after supplemental Visit inserts..."
+                )
+                _refresh_visits_existing(con, token)
+        else:
+            if len(df_visits_insert_fc) > 0:
+                con.execute("""
+                    INSERT INTO visits_existing (GlobalID, STATION, VISIT_TYPE, VISIT_DATE, DATA_NOTES, geom)
+                    SELECT
+                        'PREVIEW_NEW_VISIT_' || STATION || '_' || STRFTIME(VISIT_DATE, '%Y%m%d') AS GlobalID,
+                        STATION,
+                        VISIT_TYPE,
+                        CAST(VISIT_DATE AS TIMESTAMP) + INTERVAL 12 HOUR,
+                        DATA_NOTES,
+                        GEOM
+                    FROM fc_visits
+                    WHERE GlobalID IS NULL AND GEOM IS NOT NULL;
+                """)
 
         arcpy.SetProgressorPosition(5)
 
         # -----------------------------------------------------------------
-        # STEP 6: Fetch Existing Fish Counts & Upsert Fish Counts
+        # STEP 6: Fetch Existing Fish Counts & Upsert / Preview Fish Counts
         # -----------------------------------------------------------------
-        arcpy.SetProgressorLabel("Upserting Fish Counts...")
+        arcpy.SetProgressorLabel("Processing Fish Counts...")
         logger.info("Fetching existing Fish Counts for relational linking...")
 
         df_fishcounts = featureservice_to_df(
@@ -811,23 +888,105 @@ class ImportBioMonDEPExcel:
             f"Fish Counts -> Updates: {len(df_fish_upd)} | Inserts: {len(df_fish_ins)}"
         )
 
-        if len(df_fish_upd) > 0:
-            run_apply_edits(
-                URL_BIOMON_EDIT_FS,
-                LAYERS["fish_counts"],
-                df_to_esri_features(df_fish_upd, False, True, "GlobalID"),
-                token,
-                True,
+        if not validate_only:
+            if len(df_fish_upd) > 0:
+                run_apply_edits(
+                    URL_BIOMON_EDIT_FS,
+                    LAYERS["fish_counts"],
+                    df_to_esri_features(df_fish_upd, False, True, "GlobalID"),
+                    token,
+                    True,
+                )
+            if len(df_fish_ins) > 0:
+                run_apply_edits(
+                    URL_BIOMON_EDIT_FS,
+                    LAYERS["fish_counts"],
+                    df_to_esri_features(df_fish_ins, False, False, "GlobalID"),
+                    token,
+                    False,
+                )
+            logger.info("Biological Monitoring Excel import completed successfully.")
+        else:
+            arcpy.SetProgressorLabel(
+                "Writing preview layers and tables to memory workspace..."
             )
-        if len(df_fish_ins) > 0:
-            run_apply_edits(
-                URL_BIOMON_EDIT_FS,
-                LAYERS["fish_counts"],
-                df_to_esri_features(df_fish_ins, False, False, "GlobalID"),
-                token,
-                False,
+            logger.info(
+                "Validate Only mode enabled: Generating in-memory preview datasets via duckdb_to_memory..."
             )
+
+            preview_outputs: list[str] = []
+            exclude_helper_cols = {"x", "y", "row_num"}
+
+            # 1. Visits Updates (Spatial Point Layer from DuckDB GEOM)
+            path_v_upd = duckdb_to_memory(
+                con=con,
+                source_query_or_table="SELECT * FROM visits WHERE GlobalID IS NOT NULL",
+                raw_out_name="preview_visits_update",
+                spatial_ref=DEFAULT_WKID,
+                active_map=active_map,
+                exclude_cols=exclude_helper_cols,
+            )
+            if path_v_upd:
+                preview_outputs.append(path_v_upd)
+
+            # 2. Visits Inserts (Union PhysChem/Rhab, Supplemental BIF, and Supplemental BIB Inserts)
+            visits_insert_union_sql = """
+                SELECT 'PhysChem / Rhab' AS PREVIEW_SOURCE, * EXCLUDE (GlobalID)
+                FROM visits
+                WHERE GlobalID IS NULL AND GEOM IS NOT NULL
+                UNION ALL BY NAME
+                SELECT 'Supplemental Fish (BIF)' AS PREVIEW_SOURCE, * EXCLUDE (GlobalID)
+                FROM fc_visits
+                WHERE GlobalID IS NULL AND GEOM IS NOT NULL
+                UNION ALL BY NAME
+                SELECT 'Supplemental Benthics (BIB)' AS PREVIEW_SOURCE, * EXCLUDE (GlobalID)
+                FROM bc_visits
+                WHERE GlobalID IS NULL AND GEOM IS NOT NULL
+            """
+            path_v_ins = duckdb_to_memory(
+                con=con,
+                source_query_or_table=visits_insert_union_sql,
+                raw_out_name="preview_visits_insert",
+                spatial_ref=DEFAULT_WKID,
+                active_map=active_map,
+                exclude_cols=exclude_helper_cols,
+            )
+            if path_v_ins:
+                preview_outputs.append(path_v_ins)
+
+            # 3. Fish Counts Updates (Standalone Table)
+            path_fc_upd = duckdb_to_memory(
+                con=con,
+                source_query_or_table="SELECT * FROM transformed_fish_counts WHERE GlobalID IS NOT NULL",
+                raw_out_name="preview_fish_counts_update",
+                spatial_ref=DEFAULT_WKID,
+                active_map=active_map,
+                exclude_cols=exclude_helper_cols,
+            )
+            if path_fc_upd:
+                preview_outputs.append(path_fc_upd)
+
+            # 4. Fish Counts Inserts (Standalone Table)
+            path_fc_ins = duckdb_to_memory(
+                con=con,
+                source_query_or_table="SELECT * EXCLUDE (GlobalID) FROM transformed_fish_counts WHERE GlobalID IS NULL",
+                raw_out_name="preview_fish_counts_insert",
+                spatial_ref=DEFAULT_WKID,
+                active_map=active_map,
+                exclude_cols=exclude_helper_cols,
+            )
+            if path_fc_ins:
+                preview_outputs.append(path_fc_ins)
+
+            if preview_outputs:
+                parameters[2].value = preview_outputs
+                logger.info(
+                    f"Validation complete. Added {len(preview_outputs)} preview dataset(s) to the active map."
+                )
+            else:
+                logger.warning(
+                    "Validation complete, but no records were generated for insert or update."
+                )
 
         arcpy.SetProgressorPosition(6)
         arcpy.ResetProgressor()
-        logger.info("Biological Monitoring Excel import completed successfully.")

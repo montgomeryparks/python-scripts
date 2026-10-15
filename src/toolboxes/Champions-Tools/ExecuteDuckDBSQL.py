@@ -1,17 +1,15 @@
 import logging
 import re
-from typing import Literal
 
 import arcpy
 import duckdb
-import pandas as pd
 from shapely import wkb
 
 from src.utils.arc_logging import setup_arcgis_logging
 from src.utils.data_conversion import (
     _norm,
+    duckdb_to_memory,
     featureclass_to_df,
-    map_pandas_dtype_to_arcpy,
 )
 from src.utils.sql import (
     extract_where_clauses,
@@ -159,10 +157,10 @@ class ExecuteDuckDBSQL:
 
     def execute(self, parameters, messages):
         if not logger.handlers and not logging.getLogger().handlers:
-            setup_arcgis_logging(logging.DEBUG)
+            setup_arcgis_logging(logging.DEBUG, "champion_tools")
         else:
             logger.handlers.clear()
-            setup_arcgis_logging(logging.DEBUG)
+            setup_arcgis_logging(logging.DEBUG, "champion_tools")
 
         logger.info("DuckDB tool execution started.")
 
@@ -187,15 +185,6 @@ class ExecuteDuckDBSQL:
                 "You must provide either a SQL query string or load a .sql file."
             )
             return
-
-        out_name = re.sub(r"[^a-zA-Z0-9_]", "_", raw_out_name.strip())
-        if re.match(r"^[0-9]", out_name):
-            out_name = f"tbl_{out_name}"
-
-        if out_name != raw_out_name:
-            logger.warning(
-                f"Output Dataset Name '{raw_out_name}' was scrubbed to '{out_name}' to meet workspace naming rules."
-            )
 
         aprx = arcpy.mp.ArcGISProject("CURRENT")
         active_map = aprx.activeMap
@@ -343,12 +332,19 @@ class ExecuteDuckDBSQL:
                     f"Failed to register {lyr.name}: {str(e).splitlines()[0]}"
                 )
 
-        arcpy.SetProgressorLabel("Executing DuckDB SQL...")
+        arcpy.SetProgressorLabel("Executing DuckDB SQL and writing to map dataset...")
         logger.info("Executing DuckDB SQL...")
 
         try:
-            con.execute(f"CREATE TEMP TABLE _user_result AS {query}")
-        except duckdb.Error as e:
+            out_path = duckdb_to_memory(
+                con=con,
+                source_query_or_table=query,
+                raw_out_name=raw_out_name,
+                spatial_ref=active_map.spatialReference,
+                active_map=active_map,
+                oid_mapping=oid_mapping,
+            )
+        except (duckdb.Error, ValueError) as e:
             clean_msg = (
                 str(e)
                 .split("\n")[0]
@@ -358,152 +354,9 @@ class ExecuteDuckDBSQL:
             logger.error(f"SQL Error: {clean_msg}")
             return
 
-        col_info = con.execute("PRAGMA table_info('_user_result')").fetchall()
-
-        select_cols = []
-        spatial_cols = []
-
-        for col in col_info:
-            col_name = col[1]
-            col_type = col[2]
-            if col_type == "GEOMETRY":
-                spatial_cols.append(col_name)
-                select_cols.append(f'ST_AsWKB("{col_name}") AS "{col_name}"')
-            else:
-                select_cols.append(f'"{col_name}"')
-
-        if len(spatial_cols) > 1:
-            logger.error(
-                f"SQL Error: Multiple geometry columns returned ({', '.join(spatial_cols)}). ArcGIS only supports one geometry field per dataset."
-            )
-            return
-
-        final_query = f"SELECT {', '.join(select_cols)} FROM _user_result"
-        res_df = con.execute(final_query).df()
-
-        if res_df.empty:
+        if not out_path:
             logger.warning("Query executed successfully but returned 0 rows.")
             return
-
-        arcpy.SetProgressorLabel("Writing results to map dataset...")
-        out_path = f"memory\\{out_name}"
-
-        for map_lyr in active_map.listLayers():
-            if map_lyr.name == out_name:
-                active_map.removeLayer(map_lyr)
-        for map_tbl in active_map.listTables():
-            if map_tbl.name == out_name:
-                active_map.removeTable(map_tbl)
-
-        arcpy.management.Delete(out_path)
-
-        res_df.columns = res_df.columns.str.strip()
-
-        spatial_ref = active_map.spatialReference
-        shape_col = spatial_cols[0].strip() if spatial_cols else None
-
-        rename_map = {}
-        for col in res_df.columns:
-            base_col = col.split(".")[-1]
-            base_col_lower = base_col.lower()
-
-            if (
-                base_col_lower in ["objectid", "fid", "oid"]
-                or base_col_lower in oid_mapping
-            ) and col != shape_col:
-                rename_map[col] = f"{base_col.upper()}_RESULT"
-                logger.warning(
-                    f"Renaming intrinsic OID field '{col}' to '{rename_map[col]}' to avoid Geodatabase conflict."
-                )
-            elif "." in col and col != shape_col:
-                rename_map[col] = col.replace(".", "_")
-
-        if rename_map:
-            res_df = res_df.rename(columns=rename_map)
-
-        duckdb_geom_map: dict[
-            str, Literal["POINT", "MULTIPOINT", "POLYGON", "POLYLINE"]
-        ] = {
-            "POINT": "POINT",
-            "LINESTRING": "POLYLINE",
-            "POLYGON": "POLYGON",
-            "MULTIPOINT": "MULTIPOINT",
-            "MULTILINESTRING": "POLYLINE",
-            "MULTIPOLYGON": "POLYGON",
-            "GEOMETRYCOLLECTION": "POLYGON",
-        }
-
-        is_spatial_output = False
-        out_geom: Literal["POINT", "MULTIPOINT", "POLYGON", "POLYLINE"] = "POLYGON"
-
-        if shape_col and shape_col in res_df.columns:
-            try:
-                geom_query = f'SELECT ST_GeometryType("{shape_col}") FROM _user_result WHERE "{shape_col}" IS NOT NULL LIMIT 1'
-                geom_res = con.execute(geom_query).fetchone()
-                if geom_res and geom_res[0]:
-                    out_geom = duckdb_geom_map.get(geom_res[0], "POLYGON")
-            except duckdb.Error:
-                logger.warning(
-                    "Unable to determine output geometry type; defaulting to POLYGON.",
-                    exc_info=True,
-                )
-
-            arcpy.management.CreateFeatureclass(
-                "memory", out_name, out_geom, spatial_reference=spatial_ref
-            )
-            is_spatial_output = True
-        else:
-            arcpy.management.CreateTable("memory", out_name)
-            if shape_col in res_df.columns:
-                res_df.drop(columns=[shape_col], inplace=True)
-
-        attribute_cols = [c for c in res_df.columns if c != shape_col]
-
-        for col in attribute_cols:
-            original_col = next((k for k, v in rename_map.items() if v == col), col)
-            original_base_lower = original_col.split(".")[-1].lower()
-
-            if original_base_lower in oid_mapping:
-                field_type = (
-                    "BIGINTEGER" if oid_mapping[original_base_lower] else "LONG"
-                )
-            else:
-                field_type = map_pandas_dtype_to_arcpy(res_df[col].dtype)
-
-            arcpy.management.AddField(
-                out_path,
-                col,
-                field_type,
-                field_length=500 if field_type == "TEXT" else None,
-            )
-
-        if is_spatial_output:
-            assert shape_col is not None
-            insert_fields = attribute_cols + ["SHAPE@"]
-            with arcpy.da.InsertCursor(out_path, insert_fields) as inserter:
-                for _, row in res_df.iterrows():
-                    geom = (
-                        arcpy.FromWKB(row[shape_col])
-                        if pd.notnull(row[shape_col])
-                        else None
-                    )
-                    attrs = [
-                        row[c] if pd.notnull(row[c]) else None for c in attribute_cols
-                    ]
-                    inserter.insertRow(attrs + [geom])
-            logger.info(
-                f"Created Spatial Layer: {out_path} (Auto-detected: {out_geom})"
-            )
-        else:
-            if attribute_cols:
-                with arcpy.da.InsertCursor(out_path, attribute_cols) as inserter:
-                    for _, row in res_df.iterrows():
-                        attrs = [
-                            row[c] if pd.notnull(row[c]) else None
-                            for c in attribute_cols
-                        ]
-                        inserter.insertRow(attrs)
-            logger.info(f"Created Table: {out_path}")
 
         parameters[3].value = out_path
         arcpy.ResetProgressor()
