@@ -80,15 +80,16 @@ REQUIRED_SCHEMA: dict[str, list[str]] = {
 def validate_excel_schema(xlsx_path: str) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
+    file_name = os.path.basename(xlsx_path)
 
     try:
         excel_file = pd.ExcelFile(xlsx_path)
     except PermissionError:
         return [
-            "Permission denied: The Excel workbook is currently open or locked. Please close it and try again."
+            f"[{file_name}] Permission denied: The Excel workbook is currently open or locked. Please close it and try again."
         ], []
     except (OSError, ValueError, RuntimeError) as e:
-        return [f"Could not read Excel workbook: {e}"], []
+        return [f"[{file_name}] Could not read Excel workbook: {e}"], []
 
     sheet_names_str = [str(s) for s in excel_file.sheet_names]
     actual_sheets = set(sheet_names_str)
@@ -96,7 +97,7 @@ def validate_excel_schema(xlsx_path: str) -> tuple[list[str], list[str]]:
 
     if missing_sheets:
         errors.append(
-            f"Missing required sheet(s): {', '.join(sorted(missing_sheets))} "
+            f"[{file_name}] Missing required sheet(s): {', '.join(sorted(missing_sheets))} "
             f"(Found sheets: {', '.join(sheet_names_str)})"
         )
 
@@ -112,16 +113,18 @@ def validate_excel_schema(xlsx_path: str) -> tuple[list[str], list[str]]:
             ]
             if missing_cols:
                 errors.append(
-                    f"Sheet '{sheet_name}' is missing required field(s): {', '.join(missing_cols)}"
+                    f"[{file_name}] Sheet '{sheet_name}' is missing required field(s): {', '.join(missing_cols)}"
                 )
 
             if sheet_name in {"PhysChem", "Rhab"}:
                 if "MON_TYPE" not in actual_cols_upper:
                     warnings.append(
-                        f"Sheet '{sheet_name}' is missing optional field 'MON_TYPE'. Visit types will be inferred from counts or defaulted."
+                        f"[{file_name}] Sheet '{sheet_name}' is missing optional field 'MON_TYPE'. Visit types will be inferred from counts or defaulted."
                     )
         except (OSError, ValueError, KeyError, RuntimeError) as e:
-            errors.append(f"Error inspecting columns in sheet '{sheet_name}': {e}")
+            errors.append(
+                f"[{file_name}] Error inspecting columns in sheet '{sheet_name}': {e}"
+            )
 
     return errors, warnings
 
@@ -159,7 +162,7 @@ class ImportBioMonDEPExcel:
     def __init__(self):
         self.label = "Import MCDEP Biological Monitoring Excel"
         self.description = (
-            "Ingests an MCDEP Biological Monitoring data exchange Excel workbook (.xlsx) "
+            "Ingests one or more MCDEP Biological Monitoring data exchange Excel workbooks (.xlsx) "
             "(Benthics, Fish, PhysChem, and Rhab sheets) and upserts Visit and Fish Count "
             "records into the hosted BioMon_EDIT Feature Service, or outputs preview "
             "layers/tables to the active map for pre-import validation."
@@ -168,11 +171,12 @@ class ImportBioMonDEPExcel:
 
     def getParameterInfo(self):
         param_xlsx = arcpy.Parameter(
-            displayName="Input BioMon Excel File (.xlsx)",
+            displayName="Input BioMon Excel File(s) (.xlsx)",
             name="in_excel_file",
             datatype="DEFile",
             parameterType="Required",
             direction="Input",
+            multiValue=True,
         )
         param_xlsx.filter.list = ["xlsx"]
 
@@ -206,26 +210,38 @@ class ImportBioMonDEPExcel:
         param_xlsx = parameters[0]
         param_xlsx.clearMessage()
 
-        xlsx_path = param_xlsx.valueAsText
-        if not xlsx_path:
+        raw_files = param_xlsx.valueAsText
+        if not raw_files:
             return
 
-        if not os.path.exists(xlsx_path):
-            param_xlsx.setErrorMessage("The specified Excel file does not exist.")
-            return
+        file_list = [f.strip("'") for f in raw_files.split(";")]
+        all_errors = []
+        all_warnings = []
 
-        if not xlsx_path.lower().endswith(".xlsx"):
-            param_xlsx.setErrorMessage("Input file must be an .xlsx workbook.")
-            return
+        for xlsx_path in file_list:
+            if not os.path.exists(xlsx_path):
+                all_errors.append(
+                    f"[{os.path.basename(xlsx_path)}] The specified Excel file does not exist."
+                )
+                continue
 
-        schema_errors, schema_warnings = validate_excel_schema(xlsx_path)
-        if schema_errors:
-            formatted_errors = "\n - ".join(schema_errors)
+            if not xlsx_path.lower().endswith(".xlsx"):
+                all_errors.append(
+                    f"[{os.path.basename(xlsx_path)}] Input file must be an .xlsx workbook."
+                )
+                continue
+
+            schema_errors, schema_warnings = validate_excel_schema(xlsx_path)
+            all_errors.extend(schema_errors)
+            all_warnings.extend(schema_warnings)
+
+        if all_errors:
+            formatted_errors = "\n - ".join(all_errors)
             param_xlsx.setErrorMessage(
                 f"Excel Schema Validation Failed:\n - {formatted_errors}"
             )
-        elif schema_warnings:
-            formatted_warnings = "\n - ".join(schema_warnings)
+        elif all_warnings:
+            formatted_warnings = "\n - ".join(all_warnings)
             param_xlsx.setWarningMessage(
                 f"Excel Schema Warning:\n - {formatted_warnings}"
             )
@@ -239,26 +255,32 @@ class ImportBioMonDEPExcel:
 
         arcpy.env.overwriteOutput = True
 
-        target_file = parameters[0].valueAsText
+        raw_files = parameters[0].valueAsText
+        file_list = [f.strip("'") for f in raw_files.split(";")]
         validate_only = bool(parameters[1].value)
-        safe_target_file = target_file.replace("\\", "/")
 
         mode_str = "VALIDATION / PREVIEW MODE" if validate_only else "LIVE IMPORT MODE"
         logger.info(
-            f"Starting Biological Monitoring data import [{mode_str}] for: {target_file}"
+            f"Starting Biological Monitoring data import [{mode_str}] for {len(file_list)} file(s)."
         )
         arcpy.SetProgressor(
-            "step", "Validating Excel schema and initializing...", 0, 6, 1
+            "step", "Validating Excel schema(s) and initializing...", 0, 6, 1
         )
 
-        schema_errors, schema_warnings = validate_excel_schema(target_file)
-        if schema_errors:
-            for err in schema_errors:
+        all_schema_errors = []
+        all_schema_warnings = []
+        for xlsx_path in file_list:
+            errs, warns = validate_excel_schema(xlsx_path)
+            all_schema_errors.extend(errs)
+            all_schema_warnings.extend(warns)
+
+        if all_schema_errors:
+            for err in all_schema_errors:
                 logger.error(f"Schema Validation Error: {err}")
             raise arcpy.ExecuteError(
-                "Execution halted due to missing required sheets or fields in the input Excel workbook."
+                "Execution halted due to missing required sheets or fields in the input Excel workbook(s)."
             )
-        for warn in schema_warnings:
+        for warn in all_schema_warnings:
             logger.warning(f"Schema Warning: {warn}")
 
         active_map = None
@@ -306,112 +328,133 @@ class ImportBioMonDEPExcel:
             arcpy.SetProgressorPosition(2)
 
             # -----------------------------------------------------------------
-            # STEP 3: Read & Normalize Excel Sheets in DuckDB
+            # STEP 3: Read & Normalize Excel Sheets in DuckDB (Multi-File)
             # -----------------------------------------------------------------
             arcpy.SetProgressorLabel("Reading Excel sheets into DuckDB...")
-            con.execute(f"""
-                CREATE OR REPLACE TEMP TABLE _stg_physchem AS
-                SELECT * FROM read_xlsx('{safe_target_file}', sheet='PhysChem', all_varchar=true);
 
-                CREATE OR REPLACE TEMP TABLE _stg_rhab AS
-                SELECT * FROM read_xlsx('{safe_target_file}', sheet='Rhab', all_varchar=true);
+            # Create empty base tables to UNION into
+            con.execute("""
+                CREATE OR REPLACE TABLE raw_benthics_counts (SOURCE_FILE VARCHAR, STATION VARCHAR, VISIT_DATE DATE, BC_TAXA VARCHAR, INDIVIDUALS INT, TRAYS INT, GRIDS INT);
+                CREATE OR REPLACE TABLE raw_fish_counts (SOURCE_FILE VARCHAR, STATION VARCHAR, VISIT_DATE DATE, FC_SPECIES VARCHAR, PASS_1 INT, PASS_2 INT, TOTAL_COUNT INT, TOTAL_ANOMALIES INT, ANOMALIES VARCHAR, row_num INT);
+                CREATE OR REPLACE TABLE raw_phys_chem (SOURCE_FILE VARCHAR, STATION VARCHAR, VISIT_DATE DATE, VISIT_TYPE VARCHAR, PC_AIRTEMP_F INT, PC_AIRTEMP_C INT, PC_WATERTEMP_C FLOAT, PC_PH FLOAT, PC_DO_CONC FLOAT, PC_DO_SAT FLOAT, PC_COND FLOAT, PC_TURB FLOAT, PC_TIME VARCHAR, PC_NOTES VARCHAR);
+                CREATE OR REPLACE TABLE raw_rhab (SOURCE_FILE VARCHAR, STATION VARCHAR, VISIT_DATE DATE, VISIT_TYPE VARCHAR, RHAB_INSTREAMCOVER INT, RHAB_EPISUBSTRATE INT, RHAB_EMBEDDEDNESS INT, RHAB_CHANNELALT INT, RHAB_SEDDEPOSIT INT, RHAB_RIFFLEFREQ INT, RHAB_CHANNELFLOWSTATUS INT, RHAB_VEG_LB INT, RHAB_VEG_RB INT, RHAB_STABILITY_LB INT, RHAB_STABILITY_RB INT, RHAB_BUFFER_LB INT, RHAB_BUFFER_RB INT, RHAB_NOTES VARCHAR);
             """)
 
-            pc_cols = {
-                r[1].upper()
-                for r in con.execute("PRAGMA table_info('_stg_physchem')").fetchall()
-            }
-            rhab_cols = {
-                r[1].upper()
-                for r in con.execute("PRAGMA table_info('_stg_rhab')").fetchall()
-            }
+            for target_file in file_list:
+                safe_target_file = target_file.replace("\\", "/")
+                base_name = os.path.basename(target_file)
+                logger.info(f"Loading data from {base_name}...")
 
-            pc_mon_type_expr = (
-                "TRIM(MON_TYPE::VARCHAR)"
-                if "MON_TYPE" in pc_cols
-                else "CAST(NULL AS VARCHAR)"
-            )
-            rhab_mon_type_expr = (
-                "TRIM(MON_TYPE::VARCHAR)"
-                if "MON_TYPE" in rhab_cols
-                else "CAST(NULL AS VARCHAR)"
-            )
+                con.execute(f"""
+                    CREATE OR REPLACE TEMP TABLE _stg_physchem AS
+                    SELECT * FROM read_xlsx('{safe_target_file}', sheet='PhysChem', all_varchar=true);
 
-            con.execute(f"""
-                CREATE OR REPLACE TABLE raw_benthics_counts AS
-                SELECT
-                    TRIM(STATION::VARCHAR) AS STATION
-                    , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST("DATE" AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
-                    , REPLACE(LOWER(TAXA::VARCHAR), 'none', 'no benthics observed') AS BC_TAXA
-                    , TRY_CAST(NULLIF("#INDVS", 'NULL') AS INTEGER) AS INDIVIDUALS
-                    , TRY_CAST(NULLIF(trays, 'NULL') AS INTEGER) AS TRAYS
-                    , TRY_CAST(NULLIF("#GRIDS", 'NULL') AS INTEGER) AS GRIDS
-                FROM read_xlsx('{safe_target_file}', sheet='Benthics', all_varchar=true);
+                    CREATE OR REPLACE TEMP TABLE _stg_rhab AS
+                    SELECT * FROM read_xlsx('{safe_target_file}', sheet='Rhab', all_varchar=true);
+                """)
 
-                CREATE OR REPLACE TABLE raw_fish_counts AS
-                SELECT
-                    TRIM(STATION::VARCHAR) AS STATION
-                    , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
-                    , REPLACE(LOWER(SPECIES::VARCHAR), 'none', 'no fish observed') AS FC_SPECIES
-                    , TRY_CAST(NULLIF(PASS1, 'NULL') AS INTEGER) AS PASS_1
-                    , TRY_CAST(NULLIF(PASS2, 'NULL') AS INTEGER) AS PASS_2
-                    , TRY_CAST(NULLIF(PASS1, 'NULL') AS INTEGER) + TRY_CAST(NULLIF(PASS2, 'NULL') AS INTEGER) AS TOTAL_COUNT
-                    , TRY_CAST(NULLIF(ANOMALIES, 'NULL') AS INTEGER) AS TOTAL_ANOMALIES
-                    , CASE
-                        WHEN ANOMALIES_TYPE::VARCHAR = 'NULL' THEN NULL
-                        ELSE UPPER(ANOMALIES_TYPE::VARCHAR)
-                    END AS ANOMALIES
-                    , ROW_NUMBER() OVER () AS row_num
-                FROM read_xlsx('{safe_target_file}', sheet='Fish', all_varchar=true);
+                pc_cols = {
+                    r[1].upper()
+                    for r in con.execute(
+                        "PRAGMA table_info('_stg_physchem')"
+                    ).fetchall()
+                }
+                rhab_cols = {
+                    r[1].upper()
+                    for r in con.execute("PRAGMA table_info('_stg_rhab')").fetchall()
+                }
 
-                CREATE OR REPLACE TABLE raw_phys_chem AS
-                SELECT
-                    TRIM(STATION::VARCHAR) AS STATION
-                    , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
-                    , {pc_mon_type_expr} AS VISIT_TYPE
-                    , (TRY_CAST(NULLIF(AIRTEMP, 'NULL') AS INTEGER) * 9 / 5 + 32) AS PC_AIRTEMP_F
-                    , TRY_CAST(NULLIF(AIRTEMP, 'NULL') AS INTEGER) AS PC_AIRTEMP_C
-                    , TRY_CAST(NULLIF(H2OTEMP_C, 'NULL') AS FLOAT) AS PC_WATERTEMP_C
-                    , TRY_CAST(NULLIF(PH, 'NULL') AS FLOAT) AS PC_PH
-                    , TRY_CAST(NULLIF(DISOXY, 'NULL') AS FLOAT) AS PC_DO_CONC
-                    , TRY_CAST(NULLIF("%_SAT", 'NULL') AS FLOAT) AS PC_DO_SAT
-                    , TRY_CAST(NULLIF(CONDUCT, 'NULL') AS FLOAT) AS PC_COND
-                    , TRY_CAST(NULLIF(Turbidity, 'NULL') AS FLOAT) AS PC_TURB
-                    , CASE 
-                        WHEN NULLIF(TRIM(MonitoringTime), 'NULL') IS NULL THEN NULL
-                        WHEN TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) IS NOT NULL 
-                             AND TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) >= 0 
-                             AND TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) < 1
-                        THEN STRFTIME(
-                            TIMESTAMP '2000-01-01 00:00:00' + INTERVAL (ROUND(TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) * 86400)) SECOND, 
-                            '%H%M'
-                        )
-                        ELSE LPAD(REGEXP_REPLACE(NULLIF(TRIM(MonitoringTime), 'NULL'), '[^0-9]', '', 'g'), 4, '0')
-                    END AS PC_TIME
-                    , NULLIF(COMMENTS, 'NULL')::VARCHAR AS PC_NOTES
-                FROM _stg_physchem;
+                pc_mon_type_expr = (
+                    "TRIM(MON_TYPE::VARCHAR)"
+                    if "MON_TYPE" in pc_cols
+                    else "CAST(NULL AS VARCHAR)"
+                )
+                rhab_mon_type_expr = (
+                    "TRIM(MON_TYPE::VARCHAR)"
+                    if "MON_TYPE" in rhab_cols
+                    else "CAST(NULL AS VARCHAR)"
+                )
 
-                CREATE OR REPLACE TABLE raw_rhab AS
-                SELECT
-                    TRIM(STATION::VARCHAR) AS STATION
-                    , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
-                    , {rhab_mon_type_expr} AS VISIT_TYPE
-                    , TRY_CAST(NULLIF(INSTR_COVER, 'NULL') AS INTEGER) AS RHAB_INSTREAMCOVER
-                    , TRY_CAST(NULLIF(EPI_SUBSTR, 'NULL') AS INTEGER) AS RHAB_EPISUBSTRATE
-                    , TRY_CAST(NULLIF(EMBEDD, 'NULL') AS INTEGER) AS RHAB_EMBEDDEDNESS
-                    , TRY_CAST(NULLIF(CH_ALTER, 'NULL') AS INTEGER) AS RHAB_CHANNELALT
-                    , TRY_CAST(NULLIF(SED_DEPOSIT, 'NULL') AS INTEGER) AS RHAB_SEDDEPOSIT
-                    , TRY_CAST(NULLIF(RIFFLE_FREQ, 'NULL') AS INTEGER) AS RHAB_RIFFLEFREQ
-                    , TRY_CAST(NULLIF(CHAN_FLOW, 'NULL') AS INTEGER) AS RHAB_CHANNELFLOWSTATUS
-                    , TRY_CAST(NULLIF(LB_BANKVEG, 'NULL') AS INTEGER) AS RHAB_VEG_LB
-                    , TRY_CAST(NULLIF(RB_BANKVEG, 'NULL') AS INTEGER) AS RHAB_VEG_RB
-                    , TRY_CAST(NULLIF(LB_BANKSTAB, 'NULL') AS INTEGER) AS RHAB_STABILITY_LB
-                    , TRY_CAST(NULLIF(RB_BANKSTAB, 'NULL') AS INTEGER) AS RHAB_STABILITY_RB
-                    , TRY_CAST(NULLIF(LB_BUFFER, 'NULL') AS INTEGER) AS RHAB_BUFFER_LB
-                    , TRY_CAST(NULLIF(RB_BUFFER, 'NULL') AS INTEGER) AS RHAB_BUFFER_RB
-                    , NULLIF(COMMENTS, 'NULL')::VARCHAR AS RHAB_NOTES
-                FROM _stg_rhab;
-            """)
+                con.execute(f"""
+                    INSERT INTO raw_benthics_counts
+                    SELECT
+                        '{base_name}' AS SOURCE_FILE
+                        , TRIM(STATION::VARCHAR) AS STATION
+                        , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST("DATE" AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
+                        , REPLACE(LOWER(TAXA::VARCHAR), 'none', 'no benthics observed') AS BC_TAXA
+                        , TRY_CAST(NULLIF("#INDVS", 'NULL') AS INTEGER) AS INDIVIDUALS
+                        , TRY_CAST(NULLIF(trays, 'NULL') AS INTEGER) AS TRAYS
+                        , TRY_CAST(NULLIF("#GRIDS", 'NULL') AS INTEGER) AS GRIDS
+                    FROM read_xlsx('{safe_target_file}', sheet='Benthics', all_varchar=true);
+
+                    INSERT INTO raw_fish_counts
+                    SELECT
+                        '{base_name}' AS SOURCE_FILE
+                        , TRIM(STATION::VARCHAR) AS STATION
+                        , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
+                        , REPLACE(LOWER(SPECIES::VARCHAR), 'none', 'no fish observed') AS FC_SPECIES
+                        , TRY_CAST(NULLIF(PASS1, 'NULL') AS INTEGER) AS PASS_1
+                        , TRY_CAST(NULLIF(PASS2, 'NULL') AS INTEGER) AS PASS_2
+                        , TRY_CAST(NULLIF(PASS1, 'NULL') AS INTEGER) + TRY_CAST(NULLIF(PASS2, 'NULL') AS INTEGER) AS TOTAL_COUNT
+                        , TRY_CAST(NULLIF(ANOMALIES, 'NULL') AS INTEGER) AS TOTAL_ANOMALIES
+                        , CASE
+                            WHEN ANOMALIES_TYPE::VARCHAR = 'NULL' THEN NULL
+                            ELSE UPPER(ANOMALIES_TYPE::VARCHAR)
+                        END AS ANOMALIES
+                        , ROW_NUMBER() OVER () AS row_num
+                    FROM read_xlsx('{safe_target_file}', sheet='Fish', all_varchar=true);
+
+                    INSERT INTO raw_phys_chem
+                    SELECT
+                        '{base_name}' AS SOURCE_FILE
+                        , TRIM(STATION::VARCHAR) AS STATION
+                        , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
+                        , {pc_mon_type_expr} AS VISIT_TYPE
+                        , (TRY_CAST(NULLIF(AIRTEMP, 'NULL') AS INTEGER) * 9 / 5 + 32) AS PC_AIRTEMP_F
+                        , TRY_CAST(NULLIF(AIRTEMP, 'NULL') AS INTEGER) AS PC_AIRTEMP_C
+                        , TRY_CAST(NULLIF(H2OTEMP_C, 'NULL') AS FLOAT) AS PC_WATERTEMP_C
+                        , TRY_CAST(NULLIF(PH, 'NULL') AS FLOAT) AS PC_PH
+                        , TRY_CAST(NULLIF(DISOXY, 'NULL') AS FLOAT) AS PC_DO_CONC
+                        , TRY_CAST(NULLIF("%_SAT", 'NULL') AS FLOAT) AS PC_DO_SAT
+                        , TRY_CAST(NULLIF(CONDUCT, 'NULL') AS FLOAT) AS PC_COND
+                        , TRY_CAST(NULLIF(Turbidity, 'NULL') AS FLOAT) AS PC_TURB
+                        , CASE 
+                            WHEN NULLIF(TRIM(MonitoringTime), 'NULL') IS NULL THEN NULL
+                            WHEN TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) IS NOT NULL 
+                                 AND TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) >= 0 
+                                 AND TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) < 1
+                            THEN STRFTIME(
+                                TIMESTAMP '2000-01-01 00:00:00' + INTERVAL (ROUND(TRY_CAST(NULLIF(TRIM(MonitoringTime), 'NULL') AS DOUBLE) * 86400)) SECOND, 
+                                '%H%M'
+                            )
+                            ELSE LPAD(REGEXP_REPLACE(NULLIF(TRIM(MonitoringTime), 'NULL'), '[^0-9]', '', 'g'), 4, '0')
+                        END AS PC_TIME
+                        , NULLIF(COMMENTS, 'NULL')::VARCHAR AS PC_NOTES
+                    FROM _stg_physchem;
+
+                    INSERT INTO raw_rhab
+                    SELECT
+                        '{base_name}' AS SOURCE_FILE
+                        , TRIM(STATION::VARCHAR) AS STATION
+                        , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
+                        , {rhab_mon_type_expr} AS VISIT_TYPE
+                        , TRY_CAST(NULLIF(INSTR_COVER, 'NULL') AS INTEGER) AS RHAB_INSTREAMCOVER
+                        , TRY_CAST(NULLIF(EPI_SUBSTR, 'NULL') AS INTEGER) AS RHAB_EPISUBSTRATE
+                        , TRY_CAST(NULLIF(EMBEDD, 'NULL') AS INTEGER) AS RHAB_EMBEDDEDNESS
+                        , TRY_CAST(NULLIF(CH_ALTER, 'NULL') AS INTEGER) AS RHAB_CHANNELALT
+                        , TRY_CAST(NULLIF(SED_DEPOSIT, 'NULL') AS INTEGER) AS RHAB_SEDDEPOSIT
+                        , TRY_CAST(NULLIF(RIFFLE_FREQ, 'NULL') AS INTEGER) AS RHAB_RIFFLEFREQ
+                        , TRY_CAST(NULLIF(CHAN_FLOW, 'NULL') AS INTEGER) AS RHAB_CHANNELFLOWSTATUS
+                        , TRY_CAST(NULLIF(LB_BANKVEG, 'NULL') AS INTEGER) AS RHAB_VEG_LB
+                        , TRY_CAST(NULLIF(RB_BANKVEG, 'NULL') AS INTEGER) AS RHAB_VEG_RB
+                        , TRY_CAST(NULLIF(LB_BANKSTAB, 'NULL') AS INTEGER) AS RHAB_STABILITY_LB
+                        , TRY_CAST(NULLIF(RB_BANKSTAB, 'NULL') AS INTEGER) AS RHAB_STABILITY_RB
+                        , TRY_CAST(NULLIF(LB_BUFFER, 'NULL') AS INTEGER) AS RHAB_BUFFER_LB
+                        , TRY_CAST(NULLIF(RB_BUFFER, 'NULL') AS INTEGER) AS RHAB_BUFFER_RB
+                        , NULLIF(COMMENTS, 'NULL')::VARCHAR AS RHAB_NOTES
+                    FROM _stg_rhab;
+                """)
+
             arcpy.SetProgressorPosition(3)
 
             # -----------------------------------------------------------------
@@ -421,7 +464,8 @@ class ImportBioMonDEPExcel:
             con.execute("""
                 CREATE OR REPLACE TABLE visits AS
                 SELECT
-                    COALESCE(pc.STATION, rhab.STATION) AS STATION
+                    COALESCE(pc.SOURCE_FILE, rhab.SOURCE_FILE) AS SOURCE_FILE
+                    , COALESCE(pc.STATION, rhab.STATION) AS STATION
                     , CAST(COALESCE(pc.VISIT_DATE, rhab.VISIT_DATE) AS TIMESTAMP) + INTERVAL 12 HOUR AS VISIT_DATE
                     , COALESCE(
                         NULLIF(COALESCE(pc.VISIT_TYPE, rhab.VISIT_TYPE), ''),
@@ -628,14 +672,16 @@ class ImportBioMonDEPExcel:
                 CREATE OR REPLACE TABLE fc_visits AS
                 WITH fish_agg AS (
                     SELECT
-                        STATION
+                        SOURCE_FILE
+                        , STATION
                         , VISIT_DATE
                         , 'BIF' AS VISIT_TYPE
                     FROM raw_fish_counts
-                    GROUP BY STATION, VISIT_DATE
+                    GROUP BY SOURCE_FILE, STATION, VISIT_DATE
                 )
                 SELECT
-                    fa.STATION
+                    fa.SOURCE_FILE
+                    , fa.STATION
                     , fa.VISIT_DATE
                     , fa.VISIT_TYPE
                     , 'DEP' AS FISH_LEADER1
@@ -664,14 +710,16 @@ class ImportBioMonDEPExcel:
                 CREATE OR REPLACE TABLE bc_visits AS
                 WITH benthic_agg AS (
                     SELECT
-                        STATION
+                        SOURCE_FILE
+                        , STATION
                         , VISIT_DATE
                         , 'BIB' AS VISIT_TYPE
                     FROM raw_benthics_counts
-                    GROUP BY STATION, VISIT_DATE
+                    GROUP BY SOURCE_FILE, STATION, VISIT_DATE
                 )
                 SELECT
-                    ba.STATION
+                    ba.SOURCE_FILE
+                    , ba.STATION
                     , ba.VISIT_DATE
                     , ba.VISIT_TYPE
                     , 'DEP' AS BEN_SAMPLER
@@ -762,7 +810,8 @@ class ImportBioMonDEPExcel:
                 CREATE OR REPLACE TABLE transformed_fish_counts AS
                 WITH split_anomalies AS (
                     SELECT
-                        row_num
+                        SOURCE_FILE
+                        , row_num
                         , UNNEST(STRING_SPLIT(REPLACE(UPPER(ANOMALIES), '/', ','), ',')) AS token
                         , TOTAL_ANOMALIES
                     FROM raw_fish_counts
@@ -822,7 +871,8 @@ class ImportBioMonDEPExcel:
                     GROUP BY row_num
                 )
                 SELECT
-                    r.STATION
+                    r.SOURCE_FILE
+                    , r.STATION
                     , r.VISIT_DATE
                     , r.FC_SPECIES
                     , r.PASS_1
@@ -977,7 +1027,6 @@ class ImportBioMonDEPExcel:
                 if preview_outputs:
                     parameters[2].value = preview_outputs
                     if has_validation_errors:
-                        # Count the specific errors to tell the user exactly where to look
                         upd_errs = con.execute(
                             "SELECT COUNT(*) FROM visits WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
                         ).fetchone()[0]
@@ -1008,6 +1057,11 @@ class ImportBioMonDEPExcel:
                         logger.info(
                             f"Validation complete. Added {len(preview_outputs)} preview dataset(s) to the active map."
                         )
+
+            if has_validation_errors:
+                raise arcpy.ExecuteError(
+                    "Import failed due to one or more data validation errors detected during processing."
+                )
 
         except Exception as e:
             err_trace = traceback.format_exc()
