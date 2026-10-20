@@ -116,11 +116,13 @@ def validate_excel_schema(xlsx_path: str) -> tuple[list[str], list[str]]:
                     f"[{file_name}] Sheet '{sheet_name}' is missing required field(s): {', '.join(missing_cols)}"
                 )
 
-            if sheet_name in {"PhysChem", "Rhab"}:
-                if "MON_TYPE" not in actual_cols_upper:
-                    warnings.append(
-                        f"[{file_name}] Sheet '{sheet_name}' is missing optional field 'MON_TYPE'. Visit types will be inferred from counts or defaulted."
-                    )
+            if (
+                sheet_name in {"PhysChem", "Rhab"}
+                and "MON_TYPE" not in actual_cols_upper
+            ):
+                warnings.append(
+                    f"[{file_name}] Sheet '{sheet_name}' is missing optional field 'MON_TYPE'. Visit types will be inferred from counts or defaulted."
+                )
         except (OSError, ValueError, KeyError, RuntimeError) as e:
             errors.append(
                 f"[{file_name}] Error inspecting columns in sheet '{sheet_name}': {e}"
@@ -178,7 +180,7 @@ class ImportBioMonDEPExcel:
             direction="Input",
             multiValue=True,
         )
-        param_xlsx.filter.list = ["xlsx"]
+        param_xlsx.filter.list = ["xlsx"]  # pyright: ignore[reportOptionalMemberAccess]
 
         param_validate_only = arcpy.Parameter(
             displayName="Validate Only (Preview Inserts/Updates in Active Map)",
@@ -391,7 +393,7 @@ class ImportBioMonDEPExcel:
                         '{base_name}' AS SOURCE_FILE
                         , TRIM(STATION::VARCHAR) AS STATION
                         , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
-                        , REPLACE(LOWER(SPECIES::VARCHAR), 'none', 'no fish observed') AS FC_SPECIES
+                        , LOWER(SPECIES::VARCHAR).REPLACE('none', 'no fish observed').REPLACE('eastern mosquitofish', 'mosquitofish').REPLACE('cutlips minnow', 'cutlip minnow') AS FC_SPECIES
                         , TRY_CAST(NULLIF(PASS1, 'NULL') AS INTEGER) AS PASS_1
                         , TRY_CAST(NULLIF(PASS2, 'NULL') AS INTEGER) AS PASS_2
                         , TRY_CAST(NULLIF(PASS1, 'NULL') AS INTEGER) + TRY_CAST(NULLIF(PASS2, 'NULL') AS INTEGER) AS TOTAL_COUNT
@@ -534,7 +536,7 @@ class ImportBioMonDEPExcel:
             # ---- DATA VALIDATION BLOCK ----
             con.execute("""
                 ALTER TABLE visits ADD COLUMN IMPORT_STATUS VARCHAR DEFAULT 'OK';
-                ALTER TABLE visits ADD COLUMN IMPORT_MESSAGE VARCHAR DEFAULT '';
+                ALTER TABLE visits ADD COLUMN IMPORT_MESSAGE VARCHAR DEFAULT 'Ready';
 
                 UPDATE visits 
                 SET IMPORT_STATUS = 'ERROR'
@@ -607,12 +609,14 @@ class ImportBioMonDEPExcel:
                     );
                 """)
 
-            has_validation_errors = (
-                con.execute(
-                    "SELECT COUNT(*) FROM visits WHERE IMPORT_STATUS = 'ERROR'"
-                ).fetchone()[0]
-                > 0
-            )
+            has_validation_errors = False
+            validation_errors = con.execute(
+                "SELECT COUNT(*) FROM visits WHERE IMPORT_STATUS = 'ERROR'"
+            ).fetchone()
+
+            if validation_errors and validation_errors[0] > 0:
+                has_validation_errors = True
+
             if has_validation_errors and not validate_only:
                 logger.warning(
                     "Data validation errors found in primary visits! Forcing Preview Mode so you can inspect the errors in the active map."
@@ -1003,7 +1007,7 @@ class ImportBioMonDEPExcel:
 
                 path_fc_upd = duckdb_to_memory(
                     con,
-                    "SELECT 'OK' AS IMPORT_STATUS, 'Ready for update.' AS IMPORT_MESSAGE, * FROM transformed_fish_counts WHERE GlobalID IS NOT NULL",
+                    "SELECT 'OK' AS IMPORT_STATUS, 'Ready' AS IMPORT_MESSAGE, * FROM transformed_fish_counts WHERE GlobalID IS NOT NULL",
                     "preview_fish_counts_update",
                     DEFAULT_WKID,
                     active_map,
@@ -1014,7 +1018,7 @@ class ImportBioMonDEPExcel:
 
                 path_fc_ins = duckdb_to_memory(
                     con,
-                    "SELECT 'OK' AS IMPORT_STATUS, 'Ready for insert.' AS IMPORT_MESSAGE, * EXCLUDE (GlobalID) FROM transformed_fish_counts WHERE GlobalID IS NULL",
+                    "SELECT 'OK' AS IMPORT_STATUS, 'Ready' AS IMPORT_MESSAGE, * EXCLUDE (GlobalID) FROM transformed_fish_counts WHERE GlobalID IS NULL",
                     "preview_fish_counts_insert",
                     DEFAULT_WKID,
                     active_map,
@@ -1026,12 +1030,19 @@ class ImportBioMonDEPExcel:
                 if preview_outputs:
                     parameters[2].value = preview_outputs
                     if has_validation_errors:
-                        upd_errs = con.execute(
-                            "SELECT COUNT(*) FROM visits WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
-                        ).fetchone()[0]
-                        ins_errs = con.execute(
-                            "SELECT COUNT(*) FROM visits WHERE GlobalID IS NULL AND IMPORT_STATUS = 'ERROR'"
-                        ).fetchone()[0]
+                        if not (
+                            upd_errs := con.execute(
+                                "SELECT COUNT(*) FROM visits WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
+                            ).fetchone()
+                        ):
+                            upd_errs = 0
+
+                        if not (
+                            ins_errs := con.execute(
+                                "SELECT COUNT(*) FROM visits WHERE GlobalID IS NULL AND IMPORT_STATUS = 'ERROR'"
+                            ).fetchone()
+                        ):
+                            ins_errs = 0
 
                         err_details = []
                         if path_v_upd:
