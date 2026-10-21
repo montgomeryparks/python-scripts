@@ -18,6 +18,8 @@ from src.utils.data_conversion import (
 
 logger = logging.getLogger("biomon_tools")
 
+URL_FISH_TAXA = "https://services1.arcgis.com/HbzrdBZjOwNHp70P/arcgis/rest/services/BioMon_FishTaxa_EDIT/FeatureServer/0"
+
 LAYERS = {
     "visits": 0,
     "fish_counts": 2,
@@ -326,6 +328,21 @@ class ImportBioMonDEPExcel:
                 FROM df_stations;
             """)
 
+            df_fish_taxa = featureservice_to_df(
+                URL_FISH_TAXA,
+                out_fields=["COMMON_NAME", "ALIAS_NAME"],
+                token=token,
+            )
+            if df_fish_taxa.empty:
+                logger.error("Failed to retrieve Fish Taxa reference records.")
+                return
+
+            con.register("df_fish_taxa", df_fish_taxa)
+            con.execute("""
+                CREATE OR REPLACE TABLE fish_taxa_reference AS
+                SELECT COMMON_NAME, ALIAS_NAME FROM df_fish_taxa;
+            """)
+
             _refresh_visits_existing(con, token)
             arcpy.SetProgressorPosition(2)
 
@@ -393,7 +410,7 @@ class ImportBioMonDEPExcel:
                         '{base_name}' AS SOURCE_FILE
                         , TRIM(STATION::VARCHAR) AS STATION
                         , (CAST('1899-12-30' AS DATE) + CAST(FLOOR(TRY_CAST(SAMPLE_DATE AS DOUBLE)) AS INTEGER))::DATE AS VISIT_DATE
-                        , LOWER(SPECIES::VARCHAR).REPLACE('none', 'no fish observed').REPLACE('eastern mosquitofish', 'mosquitofish').REPLACE('cutlips minnow', 'cutlip minnow') AS FC_SPECIES
+                        , LOWER(SPECIES::VARCHAR) AS FC_SPECIES
                         , TRY_CAST(NULLIF(PASS1, 'NULL') AS INTEGER) AS PASS_1
                         , TRY_CAST(NULLIF(PASS2, 'NULL') AS INTEGER) AS PASS_2
                         , TRY_CAST(NULLIF(PASS1, 'NULL') AS INTEGER) + TRY_CAST(NULLIF(PASS2, 'NULL') AS INTEGER) AS TOTAL_COUNT
@@ -872,12 +889,20 @@ class ImportBioMonDEPExcel:
                         , SUM(CASE WHEN code_part = 'OT' THEN count_val ELSE 0 END) AS OT
                     FROM agg_anomalies
                     GROUP BY row_num
+                ),
+                resolved_species AS (
+                    SELECT 
+                        r.row_num,
+                        COALESCE(LOWER(t.COMMON_NAME), r.FC_SPECIES) AS FC_SPECIES_RESOLVED
+                    FROM raw_fish_counts r
+                    LEFT JOIN fish_taxa_reference t 
+                        ON r.FC_SPECIES = LOWER(t.ALIAS_NAME) AND t.ALIAS_NAME IS NOT NULL
                 )
                 SELECT
                     r.SOURCE_FILE
                     , r.STATION
                     , r.VISIT_DATE
-                    , r.FC_SPECIES
+                    , s.FC_SPECIES_RESOLVED AS FC_SPECIES
                     , r.PASS_1
                     , r.PASS_2
                     , r.TOTAL_COUNT
@@ -918,20 +943,45 @@ class ImportBioMonDEPExcel:
                 FROM raw_fish_counts r
                 LEFT JOIN pivot_anomalies p
                     ON r.row_num = p.row_num
+                LEFT JOIN resolved_species s
+                    ON r.row_num = s.row_num
                 LEFT JOIN visits_existing ve
                     ON r.STATION = ve.STATION
                     AND DATE(r.VISIT_DATE) = DATE(ve.VISIT_DATE)
                 LEFT JOIN fish_counts_existing fc
                     ON ve.GlobalID = fc.GUID
-                    AND r.FC_SPECIES = fc.FC_SPECIES
+                    AND s.FC_SPECIES_RESOLVED = fc.FC_SPECIES
                 ORDER BY r.row_num;
             """)
 
+            # Validate the resolved `FC_SPECIES` against known valid `COMMON_NAME`s
+            con.execute("""
+                ALTER TABLE transformed_fish_counts ADD COLUMN IMPORT_STATUS VARCHAR DEFAULT 'OK';
+                ALTER TABLE transformed_fish_counts ADD COLUMN IMPORT_MESSAGE VARCHAR DEFAULT 'Ready';
+
+                UPDATE transformed_fish_counts
+                SET IMPORT_STATUS = 'ERROR',
+                    IMPORT_MESSAGE = CONCAT_WS(' | ', NULLIF(IMPORT_MESSAGE, 'Ready'), 'Invalid FC_SPECIES: ' || FC_SPECIES)
+                WHERE FC_SPECIES NOT IN (SELECT LOWER(COMMON_NAME) FROM fish_taxa_reference WHERE COMMON_NAME IS NOT NULL)
+                  AND FC_SPECIES NOT IN ('no fish observed');
+            """)
+
+            fc_validation_errors = con.execute(
+                "SELECT COUNT(*) FROM transformed_fish_counts WHERE IMPORT_STATUS = 'ERROR'"
+            ).fetchone()
+            if fc_validation_errors and fc_validation_errors[0] > 0:
+                has_validation_errors = True
+                if not validate_only:
+                    logger.warning(
+                        "Data validation errors found in fish counts! Forcing Preview Mode so you can inspect the species errors in the active map."
+                    )
+                    validate_only = True
+
             df_fish_upd = con.sql(
-                "SELECT * FROM transformed_fish_counts WHERE GlobalID IS NOT NULL"
+                "SELECT * EXCLUDE (IMPORT_STATUS, IMPORT_MESSAGE) FROM transformed_fish_counts WHERE GlobalID IS NOT NULL AND IMPORT_STATUS != 'ERROR'"
             ).df()
             df_fish_ins = con.sql(
-                "SELECT * EXCLUDE (GlobalID) FROM transformed_fish_counts WHERE GlobalID IS NULL"
+                "SELECT * EXCLUDE (GlobalID, IMPORT_STATUS, IMPORT_MESSAGE) FROM transformed_fish_counts WHERE GlobalID IS NULL AND IMPORT_STATUS != 'ERROR'"
             ).df()
 
             if not validate_only:
@@ -1007,7 +1057,7 @@ class ImportBioMonDEPExcel:
 
                 path_fc_upd = duckdb_to_memory(
                     con,
-                    "SELECT 'OK' AS IMPORT_STATUS, 'Ready' AS IMPORT_MESSAGE, * FROM transformed_fish_counts WHERE GlobalID IS NOT NULL",
+                    "SELECT * FROM transformed_fish_counts WHERE GlobalID IS NOT NULL",
                     "preview_fish_counts_update",
                     DEFAULT_WKID,
                     active_map,
@@ -1018,7 +1068,7 @@ class ImportBioMonDEPExcel:
 
                 path_fc_ins = duckdb_to_memory(
                     con,
-                    "SELECT 'OK' AS IMPORT_STATUS, 'Ready' AS IMPORT_MESSAGE, * EXCLUDE (GlobalID) FROM transformed_fish_counts WHERE GlobalID IS NULL",
+                    "SELECT * EXCLUDE (GlobalID) FROM transformed_fish_counts WHERE GlobalID IS NULL",
                     "preview_fish_counts_insert",
                     DEFAULT_WKID,
                     active_map,
@@ -1044,19 +1094,37 @@ class ImportBioMonDEPExcel:
                         ):
                             ins_errs = 0
 
+                        if not (
+                            fc_upd_errs := con.execute(
+                                "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
+                            ).fetchone()
+                        ):
+                            fc_upd_errs = 0
+
+                        if not (
+                            fc_ins_errs := con.execute(
+                                "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NULL AND IMPORT_STATUS = 'ERROR'"
+                            ).fetchone()
+                        ):
+                            fc_ins_errs = 0
+
                         err_details = []
                         if path_v_upd:
                             err_details.append(
-                                f"preview_visits_update: {upd_errs} error(s)"
+                                f"preview_visits_update: {upd_errs[0] if isinstance(upd_errs, tuple) else upd_errs} error(s)"
                             )
                         if path_v_ins:
                             err_details.append(
-                                f"preview_visits_insert: {ins_errs} error(s)"
+                                f"preview_visits_insert: {ins_errs[0] if isinstance(ins_errs, tuple) else ins_errs} error(s)"
                             )
                         if path_fc_upd:
-                            err_details.append("preview_fish_counts_update: 0 error(s)")
+                            err_details.append(
+                                f"preview_fish_counts_update: {fc_upd_errs[0] if isinstance(fc_upd_errs, tuple) else fc_upd_errs} error(s)"
+                            )
                         if path_fc_ins:
-                            err_details.append("preview_fish_counts_insert: 0 error(s)")
+                            err_details.append(
+                                f"preview_fish_counts_insert: {fc_ins_errs[0] if isinstance(fc_ins_errs, tuple) else fc_ins_errs} error(s)"
+                            )
 
                         details_str = "\n - ".join(err_details)
                         logger.warning(
