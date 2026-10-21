@@ -162,6 +162,33 @@ def _refresh_visits_existing(con: duckdb.DuckDBPyConnection, token: str) -> None
         """)
 
 
+def _clear_preview_datasets(active_map):
+    """Deletes existing preview datasets from the map and memory workspace."""
+    if not active_map:
+        return
+
+    datasets_to_clear = [
+        "preview_visits_update",
+        "preview_visits_insert",
+        "preview_fish_counts_update",
+        "preview_fish_counts_insert",
+        "import_error_visits",
+    ]
+
+    for layer in active_map.listLayers():
+        if layer.name in datasets_to_clear:
+            active_map.removeLayer(layer)
+
+    for table in active_map.listTables():
+        if table.name in datasets_to_clear:
+            active_map.removeTable(table)
+
+    for dataset in datasets_to_clear:
+        path = f"memory\\{dataset}"
+        if arcpy.Exists(path):
+            arcpy.management.Delete(path)
+
+
 class ImportBioMonDEPExcel:
     def __init__(self):
         self.label = "Import MCDEP Biological Monitoring Excel"
@@ -191,7 +218,7 @@ class ImportBioMonDEPExcel:
             parameterType="Optional",
             direction="Input",
         )
-        param_validate_only.value = False
+        param_validate_only.value = True
 
         param_derived_out = arcpy.Parameter(
             displayName="Preview Datasets",
@@ -263,6 +290,14 @@ class ImportBioMonDEPExcel:
         file_list = [f.strip("'") for f in raw_files.split(";")]
         validate_only = bool(parameters[1].value)
 
+        active_map = None
+        try:
+            aprx = arcpy.mp.ArcGISProject("CURRENT")
+            active_map = aprx.activeMap
+            _clear_preview_datasets(active_map)
+        except OSError:
+            active_map = None
+
         mode_str = "VALIDATION / PREVIEW MODE" if validate_only else "LIVE IMPORT MODE"
         logger.info(
             f"Starting Biological Monitoring data import [{mode_str}] for {len(file_list)} file(s)."
@@ -286,13 +321,6 @@ class ImportBioMonDEPExcel:
             )
         for warn in all_schema_warnings:
             logger.warning(f"Schema Warning: {warn}")
-
-        active_map = None
-        try:
-            aprx = arcpy.mp.ArcGISProject("CURRENT")
-            active_map = aprx.activeMap
-        except OSError:
-            active_map = None
 
         con = duckdb.connect(database=":memory:")
         con.sql("INSTALL spatial; LOAD spatial;")
@@ -553,7 +581,7 @@ class ImportBioMonDEPExcel:
             # ---- DATA VALIDATION BLOCK ----
             con.execute("""
                 ALTER TABLE visits ADD COLUMN IMPORT_STATUS VARCHAR DEFAULT 'OK';
-                ALTER TABLE visits ADD COLUMN IMPORT_MESSAGE VARCHAR DEFAULT 'Ready';
+                ALTER TABLE visits ADD COLUMN IMPORT_MESSAGE VARCHAR DEFAULT '';
 
                 UPDATE visits 
                 SET IMPORT_STATUS = 'ERROR'
@@ -561,7 +589,7 @@ class ImportBioMonDEPExcel:
                 WHERE PC_PH < 0 OR PC_PH > 14;
 
                 UPDATE visits 
-                SET IMPORT_STATUS = 'ERROR'
+                SET IMPORT_STATUS = CASE WHEN IMPORT_STATUS = 'ERROR' THEN 'ERROR' ELSE 'WARNING' END
                     , IMPORT_MESSAGE = CONCAT_WS(' | ', NULLIF(IMPORT_MESSAGE, ''), 'Invalid Turbidity (Must be 0-10)') 
                 WHERE PC_TURB < 0 OR PC_TURB > 10;
 
@@ -627,11 +655,14 @@ class ImportBioMonDEPExcel:
                 """)
 
             has_validation_errors = False
-            validation_errors = con.execute(
-                "SELECT COUNT(*) FROM visits WHERE IMPORT_STATUS = 'ERROR'"
-            ).fetchone()
+            if not (
+                validation_errors := con.execute(
+                    "SELECT COUNT(*) FROM visits WHERE IMPORT_STATUS = 'ERROR'"
+                ).fetchone()
+            ):
+                validation_errors = (0,)
 
-            if validation_errors and validation_errors[0] > 0:
+            if validation_errors[0] > 0:
                 has_validation_errors = True
 
             if has_validation_errors and not validate_only:
@@ -826,6 +857,7 @@ class ImportBioMonDEPExcel:
                     "CREATE OR REPLACE TABLE fish_counts_existing (GlobalID VARCHAR, GUID VARCHAR, FC_SPECIES VARCHAR);"
                 )
 
+            # Build `transformed_fish_counts` integrating taxa replacement based on `fish_taxa_reference`
             con.execute("""
                 CREATE OR REPLACE TABLE transformed_fish_counts AS
                 WITH split_anomalies AS (
@@ -890,13 +922,20 @@ class ImportBioMonDEPExcel:
                     FROM agg_anomalies
                     GROUP BY row_num
                 ),
+                unnested_aliases AS (
+                    SELECT 
+                        COMMON_NAME,
+                        LOWER(TRIM(UNNEST(STRING_SPLIT(ALIAS_NAME, ';')))) AS ALIAS_NAME_SPLIT
+                    FROM fish_taxa_reference
+                    WHERE ALIAS_NAME IS NOT NULL
+                ),
                 resolved_species AS (
                     SELECT 
                         r.row_num,
                         COALESCE(LOWER(t.COMMON_NAME), r.FC_SPECIES) AS FC_SPECIES_RESOLVED
                     FROM raw_fish_counts r
-                    LEFT JOIN fish_taxa_reference t 
-                        ON r.FC_SPECIES = LOWER(t.ALIAS_NAME) AND t.ALIAS_NAME IS NOT NULL
+                    LEFT JOIN unnested_aliases t 
+                        ON r.FC_SPECIES = t.ALIAS_NAME_SPLIT
                 )
                 SELECT
                     r.SOURCE_FILE
@@ -957,19 +996,24 @@ class ImportBioMonDEPExcel:
             # Validate the resolved `FC_SPECIES` against known valid `COMMON_NAME`s
             con.execute("""
                 ALTER TABLE transformed_fish_counts ADD COLUMN IMPORT_STATUS VARCHAR DEFAULT 'OK';
-                ALTER TABLE transformed_fish_counts ADD COLUMN IMPORT_MESSAGE VARCHAR DEFAULT 'Ready';
+                ALTER TABLE transformed_fish_counts ADD COLUMN IMPORT_MESSAGE VARCHAR DEFAULT '';
 
                 UPDATE transformed_fish_counts
                 SET IMPORT_STATUS = 'ERROR',
-                    IMPORT_MESSAGE = CONCAT_WS(' | ', NULLIF(IMPORT_MESSAGE, 'Ready'), 'Invalid FC_SPECIES: ' || FC_SPECIES)
+                    IMPORT_MESSAGE = CONCAT_WS(' | ', NULLIF(IMPORT_MESSAGE, ''), 'Invalid FC_SPECIES: ' || FC_SPECIES)
                 WHERE FC_SPECIES NOT IN (SELECT LOWER(COMMON_NAME) FROM fish_taxa_reference WHERE COMMON_NAME IS NOT NULL)
                   AND FC_SPECIES NOT IN ('no fish observed');
             """)
 
-            fc_validation_errors = con.execute(
-                "SELECT COUNT(*) FROM transformed_fish_counts WHERE IMPORT_STATUS = 'ERROR'"
-            ).fetchone()
-            if fc_validation_errors and fc_validation_errors[0] > 0:
+            fc_validation_errors = False
+            if not (
+                fc_val_errs := con.execute(
+                    "SELECT COUNT(*) FROM transformed_fish_counts WHERE IMPORT_STATUS = 'ERROR'"
+                ).fetchone()
+            ):
+                fc_val_errs = (0,)
+
+            if fc_val_errs[0] > 0:
                 has_validation_errors = True
                 if not validate_only:
                     logger.warning(
@@ -1031,7 +1075,7 @@ class ImportBioMonDEPExcel:
                     SELECT
                         'Supplemental Fish (BIF)' AS PREVIEW_SOURCE
                         , 'OK' AS IMPORT_STATUS
-                        , 'Supplemental visit required for fish counts.' AS IMPORT_MESSAGE
+                        , '' AS IMPORT_MESSAGE
                         , * EXCLUDE (GlobalID)
                     FROM fc_visits
                     WHERE GlobalID IS NULL AND GEOM IS NOT NULL
@@ -1039,7 +1083,7 @@ class ImportBioMonDEPExcel:
                     SELECT
                         'Supplemental Benthics (BIB)' AS PREVIEW_SOURCE
                         , 'OK' AS IMPORT_STATUS
-                        , 'Supplemental visit required for benthics.' AS IMPORT_MESSAGE
+                        , '' AS IMPORT_MESSAGE
                         , * EXCLUDE (GlobalID)
                     FROM bc_visits
                     WHERE GlobalID IS NULL AND GEOM IS NOT NULL
@@ -1085,28 +1129,28 @@ class ImportBioMonDEPExcel:
                                 "SELECT COUNT(*) FROM visits WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
                             ).fetchone()
                         ):
-                            upd_errs = 0
+                            upd_errs = (0,)
 
                         if not (
                             ins_errs := con.execute(
                                 "SELECT COUNT(*) FROM visits WHERE GlobalID IS NULL AND IMPORT_STATUS = 'ERROR'"
                             ).fetchone()
                         ):
-                            ins_errs = 0
+                            ins_errs = (0,)
 
                         if not (
                             fc_upd_errs := con.execute(
                                 "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
                             ).fetchone()
                         ):
-                            fc_upd_errs = 0
+                            fc_upd_errs = (0,)
 
                         if not (
                             fc_ins_errs := con.execute(
                                 "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NULL AND IMPORT_STATUS = 'ERROR'"
                             ).fetchone()
                         ):
-                            fc_ins_errs = 0
+                            fc_ins_errs = (0,)
 
                         err_details = []
                         if path_v_upd:
@@ -1142,9 +1186,14 @@ class ImportBioMonDEPExcel:
                 )
                 return
 
-        except Exception as e:
+        except (duckdb.Error, ValueError, arcpy.ExecuteError) as specific_err:
+            logger.error(f"Execution Error encountered: {specific_err}")
+            arcpy.AddError(f"Import failed: {specific_err}")
+            return
+
+        except Exception as e:  # noqa: BLE001
             err_trace = traceback.format_exc()
-            logger.error(f"Execution Error encountered: {e}\n{err_trace}")
+            logger.error(f"Unexpected Execution Error encountered: {e}\n{err_trace}")
 
             try:
                 tables = [row[0] for row in con.execute("SHOW TABLES;").fetchall()]
@@ -1176,5 +1225,6 @@ class ImportBioMonDEPExcel:
             arcpy.AddError(f"Import failed: {e}")
             return
 
-        arcpy.SetProgressorPosition(6)
-        arcpy.ResetProgressor()
+        finally:
+            arcpy.SetProgressorPosition(6)
+            arcpy.ResetProgressor()
