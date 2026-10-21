@@ -1122,61 +1122,102 @@ class ImportBioMonDEPExcel:
 
                 if preview_outputs:
                     parameters[2].value = preview_outputs
+
+                    def format_status(err_cnt, warn_cnt):
+                        if err_cnt == 0 and warn_cnt == 0:
+                            return "0 errors/warnings"
+                        parts = []
+                        if err_cnt > 0:
+                            parts.append(
+                                f"{err_cnt} error{'s' if err_cnt != 1 else ''}"
+                            )
+                        if warn_cnt > 0:
+                            parts.append(
+                                f"{warn_cnt} warning{'s' if warn_cnt != 1 else ''}"
+                            )
+                        return ", ".join(parts)
+
+                    v_upd_errs = (
+                        con.execute(
+                            "SELECT COUNT(*) FROM visits WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
+                        ).fetchone()[0]
+                        or 0
+                    )
+                    v_upd_warns = (
+                        con.execute(
+                            "SELECT COUNT(*) FROM visits WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'WARNING'"
+                        ).fetchone()[0]
+                        or 0
+                    )
+
+                    v_ins_errs = (
+                        con.execute(
+                            "SELECT COUNT(*) FROM visits WHERE GlobalID IS NULL AND IMPORT_STATUS = 'ERROR'"
+                        ).fetchone()[0]
+                        or 0
+                    )
+                    v_ins_warns = (
+                        con.execute(
+                            "SELECT COUNT(*) FROM visits WHERE GlobalID IS NULL AND IMPORT_STATUS = 'WARNING'"
+                        ).fetchone()[0]
+                        or 0
+                    )
+
+                    fc_upd_errs = (
+                        con.execute(
+                            "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
+                        ).fetchone()[0]
+                        or 0
+                    )
+                    fc_upd_warns = (
+                        con.execute(
+                            "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'WARNING'"
+                        ).fetchone()[0]
+                        or 0
+                    )
+
+                    fc_ins_errs = (
+                        con.execute(
+                            "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NULL AND IMPORT_STATUS = 'ERROR'"
+                        ).fetchone()[0]
+                        or 0
+                    )
+                    fc_ins_warns = (
+                        con.execute(
+                            "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NULL AND IMPORT_STATUS = 'WARNING'"
+                        ).fetchone()[0]
+                        or 0
+                    )
+
+                    err_details = []
+                    if path_v_upd:
+                        err_details.append(
+                            f"preview_visits_update: {format_status(v_upd_errs, v_upd_warns)}"
+                        )
+                    if path_v_ins:
+                        err_details.append(
+                            f"preview_visits_insert: {format_status(v_ins_errs, v_ins_warns)}"
+                        )
+                    if path_fc_upd:
+                        err_details.append(
+                            f"preview_fish_counts_update: {format_status(fc_upd_errs, fc_upd_warns)}"
+                        )
+                    if path_fc_ins:
+                        err_details.append(
+                            f"preview_fish_counts_insert: {format_status(fc_ins_errs, fc_ins_warns)}"
+                        )
+
+                    details_str = "\n - ".join(err_details)
+
                     if has_validation_errors:
-                        if not (
-                            upd_errs := con.execute(
-                                "SELECT COUNT(*) FROM visits WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
-                            ).fetchone()
-                        ):
-                            upd_errs = (0,)
-
-                        if not (
-                            ins_errs := con.execute(
-                                "SELECT COUNT(*) FROM visits WHERE GlobalID IS NULL AND IMPORT_STATUS = 'ERROR'"
-                            ).fetchone()
-                        ):
-                            ins_errs = (0,)
-
-                        if not (
-                            fc_upd_errs := con.execute(
-                                "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
-                            ).fetchone()
-                        ):
-                            fc_upd_errs = (0,)
-
-                        if not (
-                            fc_ins_errs := con.execute(
-                                "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NULL AND IMPORT_STATUS = 'ERROR'"
-                            ).fetchone()
-                        ):
-                            fc_ins_errs = (0,)
-
-                        err_details = []
-                        if path_v_upd:
-                            err_details.append(
-                                f"preview_visits_update: {upd_errs[0] if isinstance(upd_errs, tuple) else upd_errs} error(s)"
-                            )
-                        if path_v_ins:
-                            err_details.append(
-                                f"preview_visits_insert: {ins_errs[0] if isinstance(ins_errs, tuple) else ins_errs} error(s)"
-                            )
-                        if path_fc_upd:
-                            err_details.append(
-                                f"preview_fish_counts_update: {fc_upd_errs[0] if isinstance(fc_upd_errs, tuple) else fc_upd_errs} error(s)"
-                            )
-                        if path_fc_ins:
-                            err_details.append(
-                                f"preview_fish_counts_insert: {fc_ins_errs[0] if isinstance(fc_ins_errs, tuple) else fc_ins_errs} error(s)"
-                            )
-
-                        details_str = "\n - ".join(err_details)
                         logger.warning(
-                            f"Validation complete. Please review the {len(preview_outputs)} preview dataset(s) in the active map for highlighted schema or domain errors:\n"
+                            f"Validation complete. Please review the {len(preview_outputs)} preview dataset(s) in the active map for highlighted schema or domain errors/warnings:\n"
                             f" - {details_str}"
                         )
                     else:
                         logger.info(
-                            f"Validation complete. Added {len(preview_outputs)} preview dataset(s) to the active map."
+                            f"Validation complete. Please review the {len(preview_outputs)} preview dataset(s) in the active map for any highlighted warnings:\n"
+                            f" - {details_str}"
                         )
 
             if has_validation_errors:
