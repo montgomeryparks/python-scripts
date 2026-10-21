@@ -1005,7 +1005,6 @@ class ImportBioMonDEPExcel:
                   AND FC_SPECIES NOT IN ('no fish observed');
             """)
 
-            fc_validation_errors = False
             if not (
                 fc_val_errs := con.execute(
                     "SELECT COUNT(*) FROM transformed_fish_counts WHERE IMPORT_STATUS = 'ERROR'"
