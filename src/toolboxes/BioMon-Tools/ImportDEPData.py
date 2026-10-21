@@ -725,7 +725,7 @@ class ImportBioMonDEPExcel:
                     SELECT
                         SOURCE_FILE
                         , STATION
-                        , VISIT_DATE
+                        , CAST(VISIT_DATE AS TIMESTAMP) + INTERVAL 12 HOUR AS VISIT_DATE
                         , 'BIF' AS VISIT_TYPE
                     FROM raw_fish_counts
                     GROUP BY SOURCE_FILE, STATION, VISIT_DATE
@@ -754,8 +754,8 @@ class ImportBioMonDEPExcel:
                 LEFT JOIN stations s
                     ON fa.STATION = s.STATION
                 WHERE ve.GlobalID IS NULL
-                    AND hash(fa.STATION, fa.VISIT_DATE, fa.VISIT_TYPE) NOT IN (
-                        SELECT hash(v.STATION, v.VISIT_DATE, v.VISIT_TYPE) FROM visits v WHERE IMPORT_STATUS != 'ERROR'
+                    AND hash(fa.STATION, DATE(fa.VISIT_DATE), fa.VISIT_TYPE) NOT IN (
+                        SELECT hash(v.STATION, DATE(v.VISIT_DATE), v.VISIT_TYPE) FROM visits v WHERE IMPORT_STATUS != 'ERROR'
                     );
 
                 CREATE OR REPLACE TABLE bc_visits AS
@@ -763,7 +763,7 @@ class ImportBioMonDEPExcel:
                     SELECT
                         SOURCE_FILE
                         , STATION
-                        , VISIT_DATE
+                        , CAST(VISIT_DATE AS TIMESTAMP) + INTERVAL 12 HOUR AS VISIT_DATE
                         , 'BIB' AS VISIT_TYPE
                     FROM raw_benthics_counts
                     GROUP BY SOURCE_FILE, STATION, VISIT_DATE
@@ -790,8 +790,8 @@ class ImportBioMonDEPExcel:
                 LEFT JOIN stations s
                     ON ba.STATION = s.STATION
                 WHERE ve.GlobalID IS NULL
-                    AND hash(ba.STATION, ba.VISIT_DATE, ba.VISIT_TYPE) NOT IN (
-                        SELECT hash(v.STATION, v.VISIT_DATE, v.VISIT_TYPE) FROM visits v WHERE IMPORT_STATUS != 'ERROR'
+                    AND hash(ba.STATION, DATE(ba.VISIT_DATE), ba.VISIT_TYPE) NOT IN (
+                        SELECT hash(v.STATION, DATE(v.VISIT_DATE), v.VISIT_TYPE) FROM visits v WHERE IMPORT_STATUS != 'ERROR'
                     );
             """)
 
@@ -833,10 +833,23 @@ class ImportBioMonDEPExcel:
                             'PREVIEW_NEW_VISIT_' || STATION || '_' || STRFTIME(VISIT_DATE, '%Y%m%d')
                             , STATION
                             , VISIT_TYPE
-                            , CAST(VISIT_DATE AS TIMESTAMP) + INTERVAL 12 HOUR
+                            , VISIT_DATE
                             , DATA_NOTES
                             , GEOM
                         FROM fc_visits
+                        WHERE GlobalID IS NULL AND GEOM IS NOT NULL;
+                    """)
+                if len(df_visits_insert_bc) > 0:
+                    con.execute("""
+                        INSERT INTO visits_existing (GlobalID, STATION, VISIT_TYPE, VISIT_DATE, DATA_NOTES, geom)
+                        SELECT
+                            'PREVIEW_NEW_VISIT_' || STATION || '_' || STRFTIME(VISIT_DATE, '%Y%m%d')
+                            , STATION
+                            , VISIT_TYPE
+                            , VISIT_DATE
+                            , DATA_NOTES
+                            , GEOM
+                        FROM bc_visits
                         WHERE GlobalID IS NULL AND GEOM IS NOT NULL;
                     """)
 
@@ -1137,74 +1150,78 @@ class ImportBioMonDEPExcel:
                             )
                         return ", ".join(parts)
 
-                    v_upd_errs = (
-                        con.execute(
+                    if not (
+                        v_upd_errs := con.execute(
                             "SELECT COUNT(*) FROM visits WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
-                        ).fetchone()[0]
-                        or 0
-                    )
-                    v_upd_warns = (
-                        con.execute(
+                        ).fetchone()
+                    ):
+                        v_upd_errs = (0,)
+
+                    if not (
+                        v_upd_warns := con.execute(
                             "SELECT COUNT(*) FROM visits WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'WARNING'"
-                        ).fetchone()[0]
-                        or 0
-                    )
+                        ).fetchone()
+                    ):
+                        v_upd_warns = (0,)
 
-                    v_ins_errs = (
-                        con.execute(
+                    if not (
+                        v_ins_errs := con.execute(
                             "SELECT COUNT(*) FROM visits WHERE GlobalID IS NULL AND IMPORT_STATUS = 'ERROR'"
-                        ).fetchone()[0]
-                        or 0
-                    )
-                    v_ins_warns = (
-                        con.execute(
+                        ).fetchone()
+                    ):
+                        v_ins_errs = (0,)
+
+                    if not (
+                        v_ins_warns := con.execute(
                             "SELECT COUNT(*) FROM visits WHERE GlobalID IS NULL AND IMPORT_STATUS = 'WARNING'"
-                        ).fetchone()[0]
-                        or 0
-                    )
+                        ).fetchone()
+                    ):
+                        v_ins_warns = (0,)
 
-                    fc_upd_errs = (
-                        con.execute(
+                    if not (
+                        fc_upd_errs := con.execute(
                             "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'ERROR'"
-                        ).fetchone()[0]
-                        or 0
-                    )
-                    fc_upd_warns = (
-                        con.execute(
-                            "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'WARNING'"
-                        ).fetchone()[0]
-                        or 0
-                    )
+                        ).fetchone()
+                    ):
+                        fc_upd_errs = (0,)
 
-                    fc_ins_errs = (
-                        con.execute(
+                    if not (
+                        fc_upd_warns := con.execute(
+                            "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NOT NULL AND IMPORT_STATUS = 'WARNING'"
+                        ).fetchone()
+                    ):
+                        fc_upd_warns = (0,)
+
+                    if not (
+                        fc_ins_errs := con.execute(
                             "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NULL AND IMPORT_STATUS = 'ERROR'"
-                        ).fetchone()[0]
-                        or 0
-                    )
-                    fc_ins_warns = (
-                        con.execute(
+                        ).fetchone()
+                    ):
+                        fc_ins_errs = (0,)
+
+                    if not (
+                        fc_ins_warns := con.execute(
                             "SELECT COUNT(*) FROM transformed_fish_counts WHERE GlobalID IS NULL AND IMPORT_STATUS = 'WARNING'"
-                        ).fetchone()[0]
-                        or 0
-                    )
+                        ).fetchone()
+                    ):
+                        fc_ins_warns = (0,)
 
                     err_details = []
                     if path_v_upd:
                         err_details.append(
-                            f"preview_visits_update: {format_status(v_upd_errs, v_upd_warns)}"
+                            f"preview_visits_update: {format_status(v_upd_errs[0], v_upd_warns[0])}"
                         )
                     if path_v_ins:
                         err_details.append(
-                            f"preview_visits_insert: {format_status(v_ins_errs, v_ins_warns)}"
+                            f"preview_visits_insert: {format_status(v_ins_errs[0], v_ins_warns[0])}"
                         )
                     if path_fc_upd:
                         err_details.append(
-                            f"preview_fish_counts_update: {format_status(fc_upd_errs, fc_upd_warns)}"
+                            f"preview_fish_counts_update: {format_status(fc_upd_errs[0], fc_upd_warns[0])}"
                         )
                     if path_fc_ins:
                         err_details.append(
-                            f"preview_fish_counts_insert: {format_status(fc_ins_errs, fc_ins_warns)}"
+                            f"preview_fish_counts_insert: {format_status(fc_ins_errs[0], fc_ins_warns[0])}"
                         )
 
                     details_str = "\n - ".join(err_details)
