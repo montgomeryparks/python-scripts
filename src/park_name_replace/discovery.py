@@ -77,19 +77,19 @@ def iter_feature_services(gis: GIS, config: ParkNameReplaceConfig):
         query_parts.append(f"owner:{config.owner}")
     if config.item_id:
         query_parts.append(f"id:{config.item_id}")
-    else:
-        query_parts.append('type:"Feature Service"')
         
-    query_str = " AND ".join(query_parts) if query_parts else 'type:"Feature Service"'
-    max_items = config.discovery_item_limit if config.discovery_item_limit is not None else 100
+    query_str = " AND ".join(query_parts) if query_parts else ""
+    max_items = config.discovery_item_limit if config.discovery_item_limit is not None else 1000
     
     try:
-        items = gis.content.search(query=query_str, max_items=max_items)
+        logger.info(f"Searching portal with query='{query_str}', item_type='Feature Service', max_items={max_items}")
+        items = gis.content.search(query=query_str, item_type="Feature Service", max_items=max_items)
         if items:
             for item in items:
                 yield item
     except Exception as e:
         logger.warning(f"Error searching portal items: {e}")
+
 
 
 def get_layers_and_tables(item) -> List[Tuple[Any, str, int]]:

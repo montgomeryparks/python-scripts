@@ -74,6 +74,15 @@ def run_scan(config: ParkNameReplaceConfig, message_handler=None) -> ScanResult:
         query_message = "Completed successfully"
 
         try:
+            total_count_res = res.query(where="1=1", return_count_only=True)
+            if isinstance(total_count_res, int):
+                total_records = total_count_res
+            elif isinstance(total_count_res, dict) and "count" in total_count_res:
+                total_records = total_count_res["count"]
+        except Exception:
+            total_records = 0
+
+        try:
             prev_names = list(mapping.keys())
             if prev_names:
                 batch_size = config.query_batch_size
