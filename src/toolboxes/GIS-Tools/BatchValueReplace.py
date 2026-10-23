@@ -1,7 +1,9 @@
-import arcpy
 from pathlib import Path
+
+import arcpy
 import urllib3
-from src.batch_value_replace import BatchValueReplaceConfig, run_scan, run_update
+
+from src.utils.batch_value_replace import BatchValueReplaceConfig, run_scan, run_update
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -17,8 +19,7 @@ class ArcPyMessageHandler:
         arcpy.AddError(message)
 
 
-class BatchValueReplace(object):
-
+class BatchValueReplace:
     def __init__(self):
         self.label = "Batch Value Replace"
         self.description = (
@@ -224,8 +225,6 @@ class BatchValueReplace(object):
         else:
             parameters[15].enabled = False
 
-        return
-
     def updateMessages(self, parameters):
         csv_path = parameters[1].valueAsText
         output_path = parameters[2].valueAsText
@@ -240,50 +239,83 @@ class BatchValueReplace(object):
 
         if csv_path:
             if not Path(csv_path).exists():
-                parameters[1].setErrorMessage(f"Crosswalk CSV file does not exist: {csv_path}")
+                parameters[1].setErrorMessage(
+                    f"Crosswalk CSV file does not exist: {csv_path}"
+                )
 
         if output_path and not output_path.lower().endswith(".xlsx"):
             parameters[2].setErrorMessage("Output workbook must be an .xlsx file.")
 
         if conn_method == "Saved Profile" and not profile:
-            parameters[4].setErrorMessage("ArcGIS Profile is required when using Saved Profile.")
+            parameters[4].setErrorMessage(
+                "ArcGIS Profile is required when using Saved Profile."
+            )
 
         if conn_method == "Explicit Portal" and not portal_url:
-            parameters[5].setErrorMessage("Portal URL is required when using Explicit Portal.")
+            parameters[5].setErrorMessage(
+                "Portal URL is required when using Explicit Portal."
+            )
 
         if mode == "Update" and not update_report:
-            parameters[15].setErrorMessage("Reviewed Update Workbook is required for Update mode.")
+            parameters[15].setErrorMessage(
+                "Reviewed Update Workbook is required for Update mode."
+            )
         elif mode == "Update" and update_report and not Path(update_report).exists():
-            parameters[15].setErrorMessage(f"Reviewed Update Workbook does not exist: {update_report}")
+            parameters[15].setErrorMessage(
+                f"Reviewed Update Workbook does not exist: {update_report}"
+            )
 
         if cand_limit is not None and cand_limit < 1:
-            parameters[10].setErrorMessage("Candidate layer limit must be greater than zero.")
+            parameters[10].setErrorMessage(
+                "Candidate layer limit must be greater than zero."
+            )
 
         if disc_item_limit is not None and disc_item_limit < 1:
-            parameters[11].setErrorMessage("Discovery item limit must be greater than zero.")
+            parameters[11].setErrorMessage(
+                "Discovery item limit must be greater than zero."
+            )
 
         if disc_page_size is not None and disc_page_size < 1:
-            parameters[12].setErrorMessage("Discovery page size must be greater than zero.")
+            parameters[12].setErrorMessage(
+                "Discovery page size must be greater than zero."
+            )
 
-        return
     def execute(self, parameters, messages):
         mode = parameters[0].valueAsText.lower()
         csv_path = Path(parameters[1].valueAsText)
         output_path = Path(parameters[2].valueAsText)
         conn_method = parameters[3].valueAsText
         profile = parameters[4].valueAsText if conn_method == "Saved Profile" else None
-        portal_url = parameters[5].valueAsText if conn_method == "Explicit Portal" else None
-        username = parameters[6].valueAsText if conn_method == "Explicit Portal" else None
+        portal_url = (
+            parameters[5].valueAsText if conn_method == "Explicit Portal" else None
+        )
+        username = (
+            parameters[6].valueAsText if conn_method == "Explicit Portal" else None
+        )
         fields = parameters[7].valueAsText or "PARK_NAME,LOCATION_NAME"
         owner = parameters[8].valueAsText if parameters[8].valueAsText else None
         item_id = parameters[9].valueAsText if parameters[9].valueAsText else None
-        candidate_layer_limit = parameters[10].value if parameters[10].value is not None else None
-        discovery_item_limit = parameters[11].value if parameters[11].value is not None else None
-        discovery_page_size = int(parameters[12].value) if parameters[12].value is not None else 50
-        query_batch_size = int(parameters[13].value) if parameters[13].value is not None else 100
-        edit_batch_size = int(parameters[14].value) if parameters[14].value is not None else 100
-        update_report = Path(parameters[15].valueAsText) if parameters[15].valueAsText else None
-        log_file = Path(parameters[16].valueAsText) if parameters[16].valueAsText else None
+        candidate_layer_limit = (
+            parameters[10].value if parameters[10].value is not None else None
+        )
+        discovery_item_limit = (
+            parameters[11].value if parameters[11].value is not None else None
+        )
+        discovery_page_size = (
+            int(parameters[12].value) if parameters[12].value is not None else 50
+        )
+        query_batch_size = (
+            int(parameters[13].value) if parameters[13].value is not None else 100
+        )
+        edit_batch_size = (
+            int(parameters[14].value) if parameters[14].value is not None else 100
+        )
+        update_report = (
+            Path(parameters[15].valueAsText) if parameters[15].valueAsText else None
+        )
+        log_file = (
+            Path(parameters[16].valueAsText) if parameters[16].valueAsText else None
+        )
 
         config = BatchValueReplaceConfig(
             mode=mode,
@@ -317,8 +349,5 @@ class BatchValueReplace(object):
             arcpy.AddError(f"Tool execution failed: {e}")
             raise
 
-        return
-
     def postExecute(self, parameters):
         return
-

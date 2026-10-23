@@ -1,6 +1,7 @@
 from pathlib import Path
-from typing import Optional
+
 from .models import BatchValueReplaceConfig
+
 
 def load_config_from_args(args) -> BatchValueReplaceConfig:
     return BatchValueReplaceConfig(

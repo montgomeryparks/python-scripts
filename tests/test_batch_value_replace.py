@@ -1,10 +1,9 @@
-import pytest
-from pathlib import Path
 import importlib.util
-import pandas as pd
-from src.batch_value_replace.crosswalk import load_crosswalk, build_name_mapping
-from src.batch_value_replace.config import BatchValueReplaceConfig
-from src.batch_value_replace.validation import validate_configuration
+from pathlib import Path
+
+from src.utils.batch_value_replace.config import BatchValueReplaceConfig
+from src.utils.batch_value_replace.crosswalk import build_name_mapping, load_crosswalk
+from src.utils.batch_value_replace.validation import validate_configuration
 
 # Load BatchValueReplace from file due to hyphenated folder name
 toolbox_py = Path("src/toolboxes/GIS-Tools/BatchValueReplace.py")
@@ -12,6 +11,7 @@ spec = importlib.util.spec_from_file_location("BatchValueReplace", toolbox_py)
 batch_value_replace_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(batch_value_replace_mod)
 BatchValueReplace = batch_value_replace_mod.BatchValueReplace
+
 
 def test_crosswalk_loading_and_mapping():
     csv_path = Path("Changed Park Names as of 20260813.csv")
@@ -27,6 +27,7 @@ def test_crosswalk_loading_and_mapping():
     assert isinstance(ambiguous, dict)
     assert "Glen Mar Neighborhood Park" in mapping
     assert mapping["Glen Mar Neighborhood Park"] == "Glen Mar Park"
+
 
 def test_configuration_validation(tmp_path):
     csv_path = Path("Changed Park Names as of 20260813.csv")
@@ -50,9 +51,12 @@ def test_configuration_validation(tmp_path):
     errors_bad = validate_configuration(config_bad)
     assert any("xlsx" in err.lower() for err in errors_bad)
 
+
 def test_scan_imports_without_update_failure():
-    from src.batch_value_replace.scanning import run_scan
+    from src.utils.batch_value_replace.scanning import run_scan
+
     assert callable(run_scan)
+
 
 def test_batch_value_replace_tool_structure():
     tool = BatchValueReplace()
