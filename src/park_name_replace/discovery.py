@@ -82,8 +82,8 @@ def iter_feature_services(gis: GIS, config: ParkNameReplaceConfig):
     max_items = config.discovery_item_limit if config.discovery_item_limit is not None else 1000
     
     try:
-        logger.info(f"Searching portal with query='{query_str}', item_type='Feature Service', max_items={max_items}")
-        items = gis.content.search(query=query_str, item_type="Feature Service", max_items=max_items)
+        logger.info(f"Searching portal with query='{query_str}', item_type='Feature Service', max_items={max_items}, sort_field='title', sort_order='asc'")
+        items = gis.content.search(query=query_str, item_type="Feature Service", max_items=max_items, sort_field="title", sort_order="asc")
         if items:
             for item in items:
                 yield item
@@ -125,6 +125,7 @@ def find_field(resource, requested_name: str) -> Tuple[bool, str]:
 
 def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = None, message_handler=None):
     candidates = []
+    non_candidates = []
     broken_resources = []
     items_inspected = 0
     stop_reason = "PORTAL_EXHAUSTED"
@@ -171,10 +172,6 @@ def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = Non
             continue
 
         for res, res_type, layer_id in resources:
-            if config.candidate_layer_limit is not None and len(candidates) >= config.candidate_layer_limit:
-                stop_reason = "CANDIDATE_LAYER_LIMIT_REACHED"
-                break
-
             res_url = f"{service_url}/{layer_id}" if service_url else ""
             layer_name = "Layer"
             try:
@@ -186,13 +183,10 @@ def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = Non
                     if found:
                         actual_matched_fields.append(actual_f)
 
-                if not actual_matched_fields:
-                    continue
-
                 can_edit, perm_status, perm_reason = determine_edit_permission(gis, item, res)
                 editing_supported = "Yes" if "Yes" in can_edit or "update" in str(getattr(res, "properties", {}).get("capabilities", "")).lower() else "No"
 
-                candidates.append({
+                resource_info = {
                     "portal_url": portal_url,
                     "item_title": item_title,
                     "item_id": item_id,
@@ -208,7 +202,17 @@ def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = Non
                     "active_user_can_edit": can_edit,
                     "edit_permission_status": perm_status,
                     "edit_permission_reason": perm_reason,
-                })
+                }
+
+                if actual_matched_fields:
+                    if config.candidate_layer_limit is not None and len(candidates) >= config.candidate_layer_limit:
+                        stop_reason = "CANDIDATE_LAYER_LIMIT_REACHED"
+                        non_candidates.append(resource_info)
+                    else:
+                        candidates.append(resource_info)
+                else:
+                    non_candidates.append(resource_info)
+
             except Exception as res_exc:
                 status, err_type, code, clean_msg = classify_error(res_exc)
                 log_warn(f"Resource '{item_title} / {layer_name}' error: HTTP {code} ({status})")
@@ -233,6 +237,6 @@ def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = Non
             break
 
     discovery_complete = "Yes" if stop_reason == "PORTAL_EXHAUSTED" else "No"
-    return candidates, broken_resources, items_inspected, discovery_complete, stop_reason
+    return candidates, non_candidates, broken_resources, items_inspected, discovery_complete, stop_reason
 
 

@@ -40,10 +40,10 @@ def run_scan(config: ParkNameReplaceConfig, message_handler=None) -> ScanResult:
     log_info(f"Authenticated as user: {authenticated_user}")
 
     log_info("Searching Feature Services and discovering candidates...")
-    candidates, broken_resources, items_inspected, discovery_complete, stop_reason = discover_candidates_and_broken(
+    candidates, non_candidates, broken_resources, items_inspected, discovery_complete, stop_reason = discover_candidates_and_broken(
         gis, config, message_handler
     )
-    log_info(f"Discovery complete. Items inspected: {items_inspected}, Candidates found: {len(candidates)}, Broken: {len(broken_resources)}, Stop reason: {stop_reason}")
+    log_info(f"Discovery complete. Items inspected: {items_inspected}, Candidates found: {len(candidates)}, Non-matching layers: {len(non_candidates)}, Broken: {len(broken_resources)}, Stop reason: {stop_reason}")
 
     selected_candidates = candidates
     excluded_candidates = []
@@ -172,6 +172,31 @@ def run_scan(config: ParkNameReplaceConfig, message_handler=None) -> ScanResult:
             "Query Status": query_status,
             "Query Message": query_message,
         })
+
+    for nc in non_candidates:
+        layer_summary_rows.append({
+            "Portal URL": portal_url,
+            "Item Title": nc["item_title"],
+            "Item ID": nc["item_id"],
+            "Item Owner": nc["item_owner"],
+            "Resource Type": nc["resource_type"],
+            "Layer/Table Name": nc["layer_name"],
+            "Layer/Table ID": nc["layer_id"],
+            "Layer/Table URL": nc["layer_url"],
+            "Candidate Sequence": "",
+            "Target Fields": "",
+            "Editing Supported": nc["editing_supported"],
+            "Active User Can Edit": nc["active_user_can_edit"],
+            "Edit Permission Status": nc["edit_permission_status"],
+            "Edit Permission Reason": nc["edit_permission_reason"],
+            "Total Records": -1,
+            "Matching Records": 0,
+            "Eligible Update Records": 0,
+            "Ambiguous Matches": 0,
+            "Query Status": "NO_TARGET_FIELDS",
+            "Query Message": "Target fields not found in resource",
+        })
+
 
     run_completed = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     candidate_limit_reached = "Yes" if config.candidate_layer_limit is not None and len(candidates) >= config.candidate_layer_limit else "No"
