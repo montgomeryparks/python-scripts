@@ -1,6 +1,7 @@
 import logging
 import requests
 import urllib3
+import concurrent.futures
 from typing import List, Dict, Any, Tuple
 from arcgis.gis import GIS
 from .models import BatchValueReplaceConfig
@@ -127,7 +128,6 @@ def discover_candidates_and_broken(gis: GIS, config: BatchValueReplaceConfig = N
     candidates = []
     non_candidates = []
     broken_resources = []
-    items_inspected = 0
     stop_reason = "PORTAL_EXHAUSTED"
 
     portal_url = gis.url.rstrip("/")
@@ -138,23 +138,28 @@ def discover_candidates_and_broken(gis: GIS, config: BatchValueReplaceConfig = N
         if message_handler and hasattr(message_handler, "warning"):
             message_handler.warning(msg)
 
-    for item in iter_feature_services(gis, config):
-        if config.discovery_item_limit is not None and items_inspected >= config.discovery_item_limit:
-            stop_reason = "DISCOVERY_ITEM_LIMIT_REACHED"
-            break
+    items = list(iter_feature_services(gis, config))
+    if config.discovery_item_limit is not None and len(items) > config.discovery_item_limit:
+        items = items[:config.discovery_item_limit]
+        stop_reason = "DISCOVERY_ITEM_LIMIT_REACHED"
 
-        items_inspected += 1
+    items_inspected = len(items)
+
+    def process_item(seq, item):
         item_title = getattr(item, "title", "Untitled")
         item_id = getattr(item, "id", "")
         item_owner = getattr(item, "owner", "")
         service_url = getattr(item, "url", "")
+        item_cands = []
+        item_non_cands = []
+        item_broken = []
 
         try:
             resources = get_layers_and_tables(item)
         except Exception as exc:
             status, err_type, code, clean_msg = classify_error(exc)
             log_warn(f"Item '{item_title}' ({item_id}) unavailable: HTTP {code} ({status}) - {clean_msg}")
-            broken_resources.append({
+            item_broken.append({
                 "Portal URL": portal_url,
                 "Item Title": item_title,
                 "Item ID": item_id,
@@ -163,13 +168,13 @@ def discover_candidates_and_broken(gis: GIS, config: BatchValueReplaceConfig = N
                 "Resource Type": "Feature Service",
                 "Layer/Table Name": "",
                 "Layer/Table ID": "",
-                "Discovery Sequence": items_inspected,
+                "Discovery Sequence": seq,
                 "HTTP/Error Code": code,
                 "Status": status,
                 "Error Type": err_type,
                 "Error Message": clean_msg,
             })
-            continue
+            return item_cands, item_non_cands, item_broken
 
         for res, res_type, layer_id in resources:
             res_url = f"{service_url}/{layer_id}" if service_url else ""
@@ -205,18 +210,14 @@ def discover_candidates_and_broken(gis: GIS, config: BatchValueReplaceConfig = N
                 }
 
                 if actual_matched_fields:
-                    if config.candidate_layer_limit is not None and len(candidates) >= config.candidate_layer_limit:
-                        stop_reason = "CANDIDATE_LAYER_LIMIT_REACHED"
-                        non_candidates.append(resource_info)
-                    else:
-                        candidates.append(resource_info)
+                    item_cands.append(resource_info)
                 else:
-                    non_candidates.append(resource_info)
+                    item_non_cands.append(resource_info)
 
             except Exception as res_exc:
                 status, err_type, code, clean_msg = classify_error(res_exc)
                 log_warn(f"Resource '{item_title} / {layer_name}' error: HTTP {code} ({status}) - {clean_msg}")
-                broken_resources.append({
+                item_broken.append({
                     "Portal URL": portal_url,
                     "Item Title": item_title,
                     "Item ID": item_id,
@@ -225,16 +226,30 @@ def discover_candidates_and_broken(gis: GIS, config: BatchValueReplaceConfig = N
                     "Resource Type": res_type,
                     "Layer/Table Name": layer_name,
                     "Layer/Table ID": layer_id,
-                    "Discovery Sequence": items_inspected,
+                    "Discovery Sequence": seq,
                     "HTTP/Error Code": code,
                     "Status": status,
                     "Error Type": err_type,
                     "Error Message": clean_msg,
                 })
 
-        if config.candidate_layer_limit is not None and len(candidates) >= config.candidate_layer_limit:
-            stop_reason = "CANDIDATE_LAYER_LIMIT_REACHED"
-            break
+        return item_cands, item_non_cands, item_broken
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(process_item, idx, item) for idx, item in enumerate(items, start=1)]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                cands, non_cands, broken = future.result()
+                for c in cands:
+                    if config.candidate_layer_limit is not None and len(candidates) >= config.candidate_layer_limit:
+                        stop_reason = "CANDIDATE_LAYER_LIMIT_REACHED"
+                        non_candidates.append(c)
+                    else:
+                        candidates.append(c)
+                non_candidates.extend(non_cands)
+                broken_resources.extend(broken)
+            except Exception as e:
+                logger.debug(f"Error in item discovery worker: {e}")
 
     discovery_complete = "Yes" if stop_reason == "PORTAL_EXHAUSTED" else "No"
     return candidates, non_candidates, broken_resources, items_inspected, discovery_complete, stop_reason

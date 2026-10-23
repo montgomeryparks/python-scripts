@@ -1,5 +1,6 @@
 import logging
 import pandas as pd
+import concurrent.futures
 from datetime import datetime
 from pathlib import Path
 from .models import BatchValueReplaceConfig, ScanResult
@@ -42,11 +43,12 @@ def run_scan(config: BatchValueReplaceConfig, message_handler=None) -> ScanResul
     feature_updates_rows = []
     layer_summary_rows = []
 
-    for seq, cand in enumerate(candidates, start=1):
+    def process_single_candidate(seq, cand):
         title, rtype, lname = cand["item_title"], cand["resource_type"], cand["layer_name"]
         res, target_fields, can_edit = cand["resource"], cand["target_fields"], cand["active_user_can_edit"]
         total_records, matching_records, eligible_records, ambiguous_matches = 0, 0, 0, 0
         query_status, query_message = "SUCCESS", "Completed successfully"
+        local_updates = []
 
         try:
             total_count_res = res.query(where="1=1", return_count_only=True)
@@ -82,7 +84,7 @@ def run_scan(config: BatchValueReplaceConfig, message_handler=None) -> ScanResul
                                     if eligible:
                                         eligible_records += 1
 
-                                    feature_updates_rows.append({
+                                    local_updates.append({
                                         "Portal URL": portal_url, "Connection Method": config.profile if not config.portal_url else "Explicit Portal",
                                         "Profile Name": config.profile or "", "Item Title": title, "Item ID": cand["item_id"],
                                         "Item Owner": cand["item_owner"], "Service URL": cand["service_url"], "Resource Type": rtype,
@@ -100,7 +102,7 @@ def run_scan(config: BatchValueReplaceConfig, message_handler=None) -> ScanResul
             log_err(f"Error querying candidate {title} / {lname}: HTTP {code} - {clean_msg}")
             query_status, query_message = "ERROR", clean_msg
 
-        layer_summary_rows.append({
+        summary_row = {
             "Portal URL": portal_url,
             "Item Title": title,
             "Item ID": cand["item_id"],
@@ -121,7 +123,18 @@ def run_scan(config: BatchValueReplaceConfig, message_handler=None) -> ScanResul
             "Ambiguous Matches": ambiguous_matches,
             "Query Status": query_status,
             "Query Message": query_message,
-        })
+        }
+        return local_updates, summary_row
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(process_single_candidate, seq, cand) for seq, cand in enumerate(candidates, start=1)]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                updates, summary = future.result()
+                feature_updates_rows.extend(updates)
+                layer_summary_rows.append(summary)
+            except Exception as e:
+                logger.debug(f"Error in candidate scanning worker: {e}")
 
     for nc in non_candidates:
         layer_summary_rows.append({
