@@ -1,10 +1,17 @@
 import pytest
 from pathlib import Path
+import importlib.util
 import pandas as pd
 from src.batch_value_replace.crosswalk import load_crosswalk, build_name_mapping
 from src.batch_value_replace.config import BatchValueReplaceConfig
 from src.batch_value_replace.validation import validate_configuration
-from src.toolboxes.GIS-Tools.BatchValueReplace import BatchValueReplace
+
+# Load BatchValueReplace from file due to hyphenated folder name
+toolbox_py = Path("src/toolboxes/GIS-Tools/BatchValueReplace.py")
+spec = importlib.util.spec_from_file_location("BatchValueReplace", toolbox_py)
+batch_value_replace_mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(batch_value_replace_mod)
+BatchValueReplace = batch_value_replace_mod.BatchValueReplace
 
 def test_crosswalk_loading_and_mapping():
     csv_path = Path("Changed Park Names as of 20260813.csv")

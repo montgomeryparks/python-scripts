@@ -123,8 +123,6 @@ def run_update(config: BatchValueReplaceConfig, message_handler=None) -> UpdateR
 
         resource_map = {(res_type, str(layer_id)): (res, res_type, layer_id) for res, res_type, layer_id in resources}
 
-    items_inspected = 0
-
         for (target_item_id, target_layer_id), res_updates in updates_by_resource.items():
             if target_item_id != item_id:
                 continue
