@@ -48,6 +48,46 @@ def test_configuration_validation(tmp_path):
     errors_bad = validate_configuration(config_bad)
     assert any("xlsx" in err.lower() for err in errors_bad)
 
+def test_scan_imports_without_update_failure():
+    from src.park_name_replace.scanning import run_scan
+    assert callable(run_scan)
+
+def test_candidate_limit_stops_discovery_early():
+    from unittest.mock import MagicMock
+    from src.park_name_replace.discovery import discover_candidates_and_broken
+
+    # Mock GIS and content search returning items that yield more than 20 candidates
+    mock_gis = MagicMock()
+    mock_item = MagicMock()
+    mock_item.title = "Mock Item"
+    mock_item.id = "item123"
+    mock_item.owner = "testowner"
+    mock_item.url = "http://server/arcgis/rest/services/Mock/FeatureServer"
+    
+    mock_layer = MagicMock()
+    mock_layer.properties = {
+        "id": 0,
+        "name": "MockLayer",
+        "fields": [{"name": "PARK_NAME"}],
+        "capabilities": "Query,Update"
+    }
+    mock_item.layers = [mock_layer]
+    mock_item.tables = []
+
+    mock_gis.content.search.return_value = [mock_item] * 25
+
+    config = ParkNameReplaceConfig(
+        mode="scan",
+        csv_path=Path("Changed Park Names as of 20260813.csv"),
+        output_path=Path("dummy.xlsx"),
+        candidate_layer_limit=5,
+        discovery_page_size=10,
+    )
+
+    candidates, broken, inspected, complete, stop_reason = discover_candidates_and_broken(mock_gis, config)
+    assert len(candidates) == 5
+    assert stop_reason == "CANDIDATE_LAYER_LIMIT_REACHED"
+
 def test_park_name_replace_tool_structure():
     tool = ParkNameReplace()
     assert tool.label == "Park Name Replace"
@@ -56,11 +96,11 @@ def test_park_name_replace_tool_structure():
     params = tool.getParameterInfo()
     assert len(params) == 18
 
-    # Verify method presence
     assert hasattr(tool, "isLicensed")
     assert hasattr(tool, "updateParameters")
     assert hasattr(tool, "updateMessages")
     assert hasattr(tool, "execute")
     assert hasattr(tool, "postExecute")
     assert tool.isLicensed() is True
+
 

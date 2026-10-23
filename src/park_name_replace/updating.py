@@ -7,7 +7,7 @@ from .models import ParkNameReplaceConfig, UpdateResult
 from .crosswalk import load_crosswalk, build_name_mapping
 from .reporting import read_approved_updates, write_update_workbook
 from .connection import connect_gis
-from .discovery import find_candidate_items, get_layers_and_tables, find_field
+from .discovery import get_layers_and_tables, find_field, classify_error
 
 logger = logging.getLogger("park_name_replace.updating")
 
@@ -62,22 +62,85 @@ def run_update(config: ParkNameReplaceConfig, message_handler=None) -> UpdateRes
     feature_updates_out = []
     layer_summary_out = []
 
-    items = find_candidate_items(gis, config)
-    item_map = {item.id: item for item in items}
-    for item in items:
+    broken_resources = []
+    items_inspected = 0
+    item_ids_to_fetch = set(k[0] for k in updates_by_resource.keys() if k[0])
+
+    for item_id in item_ids_to_fetch:
+        items_inspected += 1
+        try:
+            item = gis.content.get(item_id)
+            if not item:
+                raise ValueError(f"Item ID {item_id} not found on portal.")
+        except Exception as exc:
+            status, err_type, code, clean_msg = classify_error(exc)
+            log_warn(f"Item ID '{item_id}' unavailable: HTTP {code} ({status})")
+            broken_resources.append({
+                "Portal URL": portal_url,
+                "Item Title": item_id,
+                "Item ID": item_id,
+                "Item Owner": "",
+                "Service URL": "",
+                "Resource Type": "Feature Service",
+                "Layer/Table Name": "",
+                "Layer/Table ID": "",
+                "Discovery Sequence": items_inspected,
+                "HTTP/Error Code": code,
+                "Status": status,
+                "Error Type": err_type,
+                "Error Message": clean_msg,
+            })
+            continue
+
         item_title = getattr(item, "title", "Untitled")
-        item_id = getattr(item, "id", "")
         item_owner = getattr(item, "owner", "")
         service_url = getattr(item, "url", "")
 
-        resources = get_layers_and_tables(item)
-        for res, res_type, layer_id in resources:
-            res_url = f"{service_url}/{layer_id}" if service_url else ""
-            has_park_name, actual_name_field = find_field(res, config.park_name_field)
-            if not has_park_name:
+        try:
+            resources = get_layers_and_tables(item)
+        except Exception as exc:
+            status, err_type, code, clean_msg = classify_error(exc)
+            broken_resources.append({
+                "Portal URL": portal_url,
+                "Item Title": item_title,
+                "Item ID": item_id,
+                "Item Owner": item_owner,
+                "Service URL": service_url,
+                "Resource Type": "Feature Service",
+                "Layer/Table Name": "",
+                "Layer/Table ID": "",
+                "Discovery Sequence": items_inspected,
+                "HTTP/Error Code": code,
+                "Status": status,
+                "Error Type": err_type,
+                "Error Message": clean_msg,
+            })
+            continue
+
+        resource_map = {(res_type, str(layer_id)): (res, res_type, layer_id) for res, res_type, layer_id in resources}
+
+        for (target_item_id, target_layer_id), res_updates in updates_by_resource.items():
+            if target_item_id != item_id:
                 continue
 
-            has_park_code, actual_code_field = find_field(res, config.park_code_field if config.park_code_field else "PARK_CODE")
+            matched_res_tuple = None
+            for (rtype, rlid), rtuple in resource_map.items():
+                if str(rlid) == str(target_layer_id):
+                    matched_res_tuple = rtuple
+                    break
+
+            if not matched_res_tuple:
+                for row in res_updates:
+                    feature_updates_out.append({
+                        **row,
+                        "Update Result": "LAYER_NOT_FOUND",
+                        "Update Message": f"Layer/Table ID {target_layer_id} not found in item {item_id}.",
+                    })
+                continue
+
+            res, res_type, layer_id = matched_res_tuple
+            res_url = f"{service_url}/{layer_id}" if service_url else ""
+            has_park_name, actual_name_field = find_field(res, config.park_name_field)
             layer_name = getattr(res, "properties", {}).get("name", "Layer")
 
             editing_supported = False
@@ -87,6 +150,7 @@ def run_update(config: ParkNameReplaceConfig, message_handler=None) -> UpdateRes
                     editing_supported = True
             except Exception:
                 editing_supported = True
+
 
             key = (item_id, layer_id)
             res_updates = updates_by_resource.get(key, [])
