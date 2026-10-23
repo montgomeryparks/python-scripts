@@ -2,9 +2,12 @@ import logging
 import sys
 from pathlib import Path
 from typing import Optional
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 def setup_logging(log_file: Optional[Path] = None, level: int = logging.INFO) -> logging.Logger:
-    logger = logging.getLogger("park_name_replace")
+    logger = logging.getLogger("batch_value_replace")
     logger.setLevel(level)
     logger.handlers.clear()
     logger.propagate = False
@@ -25,4 +28,3 @@ def setup_logging(log_file: Optional[Path] = None, level: int = logging.INFO) ->
         logger.addHandler(file_handler)
 
     return logger
-

@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 @dataclass
-class ParkNameReplaceConfig:
+class BatchValueReplaceConfig:
     mode: str  # "scan" or "update"
     csv_path: Path
     output_path: Path
@@ -28,6 +28,10 @@ class ParkNameReplaceConfig:
     log_file: Optional[Path] = None
 
 
+# Backwards-compatibility alias
+ParkNameReplaceConfig = BatchValueReplaceConfig
+
+
 @dataclass
 class ScanResult:
     feature_updates: List[Dict[str, Any]] = field(default_factory=list)
@@ -44,4 +48,3 @@ class UpdateResult:
     broken_resources: List[Dict[str, Any]] = field(default_factory=list)
     run_info: Dict[str, Any] = field(default_factory=dict)
     output_path: Path = None
-

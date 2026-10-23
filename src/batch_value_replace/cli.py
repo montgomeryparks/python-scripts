@@ -1,18 +1,18 @@
 import argparse
 import sys
 from pathlib import Path
-from .config import ParkNameReplaceConfig, load_config_from_args
+from .config import load_config_from_args
 from .validation import validate_configuration
 from .logging_config import setup_logging
 from .scanning import run_scan
 from .updating import run_update
 
 def main():
-    parser = argparse.ArgumentParser(description="ArcGIS Park Name Replacement Tool CLI")
+    parser = argparse.ArgumentParser(description="ArcGIS Batch Value Replacement Tool CLI")
     parser.add_argument("--profile", default="work", help="Saved ArcGIS profile (default: work)")
     parser.add_argument("--portal", help="Optional explicit ArcGIS portal URL")
     parser.add_argument("--username", help="Optional username for explicit portal authentication")
-    parser.add_argument("--csv", required=True, help="Park-name crosswalk CSV file")
+    parser.add_argument("--csv", required=True, help="Crosswalk CSV file with OLD and NEW columns")
     parser.add_argument("--fields", default="PARK_NAME,LOCATION_NAME", help="Comma-separated target fields to scan/replace (default: PARK_NAME,LOCATION_NAME)")
     parser.add_argument("--mode", default="scan", choices=["scan", "update"], help="Operation mode: scan or update")
     parser.add_argument("--owner", help="Optional portal owner filter")

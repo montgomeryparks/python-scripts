@@ -1,9 +1,9 @@
 from pathlib import Path
 from typing import Optional
-from .models import ParkNameReplaceConfig
+from .models import BatchValueReplaceConfig
 
-def load_config_from_args(args) -> ParkNameReplaceConfig:
-    return ParkNameReplaceConfig(
+def load_config_from_args(args) -> BatchValueReplaceConfig:
+    return BatchValueReplaceConfig(
         mode=args.mode.lower(),
         csv_path=Path(args.csv),
         output_path=Path(args.output),

@@ -1,9 +1,11 @@
 import logging
+import requests
+import urllib3
 from typing import List, Dict, Any, Tuple
 from arcgis.gis import GIS
-from .models import ParkNameReplaceConfig
+from .models import BatchValueReplaceConfig
 
-logger = logging.getLogger("park_name_replace.discovery")
+logger = logging.getLogger("batch_value_replace.discovery")
 
 def classify_error(exc: Exception) -> Tuple[str, str, int, str]:
     msg = str(exc)
@@ -15,7 +17,11 @@ def classify_error(exc: Exception) -> Tuple[str, str, int, str]:
     if code_match:
         code = int(code_match.group(1))
 
-    if code == 400 or "invalid url" in msg_lower:
+    if isinstance(exc, (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError, urllib3.exceptions.MaxRetryError, TimeoutError)) or "timeout" in msg_lower or "timed out" in msg_lower or "connection" in msg_lower:
+        status = "CONNECTION_FAILED"
+        err_type = "Connection Error"
+        code = code or 503
+    elif code == 400 or "invalid url" in msg_lower:
         status = "BROKEN_URL"
         err_type = "Client Error"
         code = code or 400
@@ -35,10 +41,6 @@ def classify_error(exc: Exception) -> Tuple[str, str, int, str]:
         status = "ACCESS_DENIED"
         err_type = "Access Denied"
         code = code or 403
-    elif "connection" in msg_lower or "timeout" in msg_lower or "timed out" in msg_lower:
-        status = "CONNECTION_FAILED"
-        err_type = "Connection Error"
-        code = code or 503
     elif "dns" in msg_lower or "resolve" in msg_lower:
         status = "NAME_RESOLUTION_FAILED"
         err_type = "Network Error"
@@ -71,7 +73,7 @@ def determine_edit_permission(gis: GIS, item: Any, resource: Any) -> Tuple[str, 
         logger.debug(f"Could not determine edit permission: {e}")
         return "Unknown", "UNKNOWN", f"Could not determine permissions: {str(e)[:50]}"
 
-def iter_feature_services(gis: GIS, config: ParkNameReplaceConfig):
+def iter_feature_services(gis: GIS, config: BatchValueReplaceConfig):
     query_parts = []
     if config.owner:
         query_parts.append(f"owner:{config.owner}")
@@ -89,9 +91,6 @@ def iter_feature_services(gis: GIS, config: ParkNameReplaceConfig):
                 yield item
     except Exception as e:
         logger.warning(f"Error searching portal items: {e}")
-
-
-
 def get_layers_and_tables(item) -> List[Tuple[Any, str, int]]:
     resources = []
     try:
@@ -123,7 +122,8 @@ def find_field(resource, requested_name: str) -> Tuple[bool, str]:
         logger.debug(f"Error inspecting fields: {e}")
     return False, requested_name
 
-def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = None, message_handler=None):
+
+def discover_candidates_and_broken(gis: GIS, config: BatchValueReplaceConfig = None, message_handler=None):
     candidates = []
     non_candidates = []
     broken_resources = []
@@ -153,7 +153,7 @@ def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = Non
             resources = get_layers_and_tables(item)
         except Exception as exc:
             status, err_type, code, clean_msg = classify_error(exc)
-            log_warn(f"Item '{item_title}' ({item_id}) unavailable: HTTP {code} ({status})")
+            log_warn(f"Item '{item_title}' ({item_id}) unavailable: HTTP {code} ({status}) - {clean_msg}")
             broken_resources.append({
                 "Portal URL": portal_url,
                 "Item Title": item_title,
@@ -215,7 +215,7 @@ def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = Non
 
             except Exception as res_exc:
                 status, err_type, code, clean_msg = classify_error(res_exc)
-                log_warn(f"Resource '{item_title} / {layer_name}' error: HTTP {code} ({status})")
+                log_warn(f"Resource '{item_title} / {layer_name}' error: HTTP {code} ({status}) - {clean_msg}")
                 broken_resources.append({
                     "Portal URL": portal_url,
                     "Item Title": item_title,
@@ -238,5 +238,3 @@ def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = Non
 
     discovery_complete = "Yes" if stop_reason == "PORTAL_EXHAUSTED" else "No"
     return candidates, non_candidates, broken_resources, items_inspected, discovery_complete, stop_reason
-
-

@@ -1,17 +1,10 @@
 import logging
 from arcgis.gis import GIS
-from .models import ParkNameReplaceConfig
+from .models import BatchValueReplaceConfig
 
-logger = logging.getLogger("park_name_replace.connection")
+logger = logging.getLogger("batch_value_replace.connection")
 
-def connect_gis(config: ParkNameReplaceConfig) -> GIS:
-    """
-    Connects to ArcGIS Online or Enterprise based on configuration.
-    Precedence:
-    1. Explicit portal URL
-    2. Explicit saved profile
-    3. Default saved profile 'work'
-    """
+def connect_gis(config: BatchValueReplaceConfig) -> GIS:
     if config.portal_url:
         logger.info(f"Connecting to explicit portal: {config.portal_url}")
         try:

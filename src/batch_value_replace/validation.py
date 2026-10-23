@@ -1,10 +1,10 @@
 import pandas as pd
 from pathlib import Path
 from typing import List
-from .models import ParkNameReplaceConfig
+from .models import BatchValueReplaceConfig
 from .crosswalk import load_crosswalk, validate_crosswalk
 
-def validate_configuration(config: ParkNameReplaceConfig) -> List[str]:
+def validate_configuration(config: BatchValueReplaceConfig) -> List[str]:
     errors = []
     
     if not config.csv_path or not config.csv_path.exists():
@@ -30,7 +30,6 @@ def validate_configuration(config: ParkNameReplaceConfig) -> List[str]:
         errors.append("Edit batch size must be greater than zero.")
         
     if config.portal_url and not config.profile:
-        # Explicit portal selected
         if not config.portal_url.startswith("http"):
             errors.append("Portal URL must be a valid URL starting with http/https.")
             
