@@ -130,6 +130,7 @@ def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = Non
     stop_reason = "PORTAL_EXHAUSTED"
 
     portal_url = gis.url.rstrip("/")
+    target_fields = [f.strip() for f in config.fields.split(",") if f.strip()]
     
     def log_warn(msg):
         logger.warning(msg)
@@ -178,11 +179,15 @@ def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = Non
             layer_name = "Layer"
             try:
                 layer_name = getattr(res, "properties", {}).get("name", "Layer")
-                has_park_name, actual_name_field = find_field(res, config.park_name_field)
-                if not has_park_name:
-                    continue
+                
+                actual_matched_fields = []
+                for tf in target_fields:
+                    found, actual_f = find_field(res, tf)
+                    if found:
+                        actual_matched_fields.append(actual_f)
 
-                has_park_code, actual_code_field = find_field(res, config.park_code_field if config.park_code_field else "PARK_CODE")
+                if not actual_matched_fields:
+                    continue
 
                 can_edit, perm_status, perm_reason = determine_edit_permission(gis, item, res)
                 editing_supported = "Yes" if "Yes" in can_edit or "update" in str(getattr(res, "properties", {}).get("capabilities", "")).lower() else "No"
@@ -198,9 +203,7 @@ def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = Non
                     "layer_id": layer_id,
                     "layer_url": res_url,
                     "resource": res,
-                    "park_name_field": actual_name_field,
-                    "park_code_field_present": has_park_code,
-                    "actual_code_field": actual_code_field,
+                    "target_fields": actual_matched_fields,
                     "editing_supported": editing_supported,
                     "active_user_can_edit": can_edit,
                     "edit_permission_status": perm_status,
@@ -231,4 +234,5 @@ def discover_candidates_and_broken(gis: GIS, config: ParkNameReplaceConfig = Non
 
     discovery_complete = "Yes" if stop_reason == "PORTAL_EXHAUSTED" else "No"
     return candidates, broken_resources, items_inspected, discovery_complete, stop_reason
+
 

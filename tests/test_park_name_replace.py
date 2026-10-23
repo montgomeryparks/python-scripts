@@ -12,9 +12,8 @@ def test_crosswalk_loading_and_mapping():
 
     df = load_crosswalk(csv_path)
     assert not df.empty
-    assert "PARK_CODE" in df.columns
-    assert "PARK_NAME" in df.columns
-    assert "PREV_PARK_NAME" in df.columns
+    assert "OLD" in df.columns
+    assert "NEW" in df.columns
 
     mapping, ambiguous = build_name_mapping(df)
     assert isinstance(mapping, dict)
@@ -22,8 +21,7 @@ def test_crosswalk_loading_and_mapping():
     # Check a known entry from CSV
     # B23,Glen Mar Park,Glen Mar Neighborhood Park
     assert "Glen Mar Neighborhood Park" in mapping
-    assert mapping["Glen Mar Neighborhood Park"]["new_name"] == "Glen Mar Park"
-    assert mapping["Glen Mar Neighborhood Park"]["park_code"] == "B23"
+    assert mapping["Glen Mar Neighborhood Park"] == "Glen Mar Park"
 
 def test_configuration_validation(tmp_path):
     csv_path = Path("Changed Park Names as of 20260813.csv")
@@ -94,7 +92,7 @@ def test_park_name_replace_tool_structure():
     assert tool.canRunInBackground is True
 
     params = tool.getParameterInfo()
-    assert len(params) == 18
+    assert len(params) == 17
 
     assert hasattr(tool, "isLicensed")
     assert hasattr(tool, "updateParameters")
@@ -102,5 +100,6 @@ def test_park_name_replace_tool_structure():
     assert hasattr(tool, "execute")
     assert hasattr(tool, "postExecute")
     assert tool.isLicensed() is True
+
 
 

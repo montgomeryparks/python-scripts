@@ -61,14 +61,12 @@ def run_scan(config: ParkNameReplaceConfig, message_handler=None) -> ScanResult:
         log_info(f"Scanning {seq} of {total_candidates}: {title} / {lname} ({rtype})")
 
         res = cand["resource"]
-        name_field = cand["park_name_field"]
-        code_field = cand["actual_code_field"]
-        has_code = cand["park_code_field_present"]
+        target_fields = cand["target_fields"]
+        can_edit = cand["active_user_can_edit"]
 
         total_records = 0
         matching_records = 0
         eligible_records = 0
-        code_mismatches = 0
         ambiguous_matches = 0
         query_status = "SUCCESS"
         query_message = "Completed successfully"
@@ -83,79 +81,71 @@ def run_scan(config: ParkNameReplaceConfig, message_handler=None) -> ScanResult:
             total_records = 0
 
         try:
-            prev_names = list(mapping.keys())
-            if prev_names:
+            old_values = list(mapping.keys())
+            if old_values:
                 batch_size = config.query_batch_size
-                for i in range(0, len(prev_names), batch_size):
-                    batch_names = prev_names[i:i+batch_size]
-                    escaped_names = [n.replace("'", "''") for n in batch_names]
-                    where_clause = f"{name_field} IN ('" + "', '".join(escaped_names) + "')"
+                for target_field in target_fields:
+                    for i in range(0, len(old_values), batch_size):
+                        batch_names = old_values[i:i+batch_size]
+                        escaped_names = [n.replace("'", "''") for n in batch_names]
+                        where_clause = f"{target_field} IN ('" + "', '".join(escaped_names) + "')"
 
-                    fields_to_query = ["OBJECTID", name_field]
-                    if has_code and code_field:
-                        fields_to_query.append(code_field)
-                    if hasattr(res, "properties") and "globalIdField" in res.properties and res.properties["globalIdField"]:
-                        gid_field = res.properties["globalIdField"]
-                        if gid_field not in fields_to_query:
-                            fields_to_query.append(gid_field)
+                        fields_to_query = ["OBJECTID", target_field]
+                        if hasattr(res, "properties") and "globalIdField" in res.properties and res.properties["globalIdField"]:
+                            gid_field = res.properties["globalIdField"]
+                            if gid_field not in fields_to_query:
+                                fields_to_query.append(gid_field)
 
-                    features = res.query(where=where_clause, out_fields=",".join(fields_to_query), return_geometry=False).features
-                    for feat in features:
-                        attrs = feat.attributes
-                        oid = attrs.get("OBJECTID") or attrs.get("objectid")
-                        current_name = str(attrs.get(name_field, "")).strip()
-                        current_code = str(attrs.get(code_field, "")).strip() if has_code and code_field else ""
+                        features = res.query(where=where_clause, out_fields=",".join(fields_to_query), return_geometry=False).features
+                        for feat in features:
+                            attrs = feat.attributes
+                            oid = attrs.get("OBJECTID") or attrs.get("objectid")
+                            current_val = str(attrs.get(target_field, "")).strip()
 
-                        if current_name in mapping:
-                            matching_records += 1
-                            target_info = mapping[current_name]
-                            corrected_name = target_info["new_name"]
-                            expected_code = target_info["park_code"]
+                            if current_val in mapping:
+                                matching_records += 1
+                                corrected_val = mapping[current_val]
 
-                            match_status = "CONFIRMED"
-                            eligible = True
+                                match_status = "CONFIRMED"
+                                eligible = True
+                                update_reason = ""
 
-                            if current_name in ambiguous_map:
-                                match_status = "AMBIGUOUS_CROSSWALK"
-                                eligible = False
-                                ambiguous_matches += 1
-                            elif has_code and code_field:
-                                if not current_code or current_code.lower() == "none" or current_code == "":
-                                    match_status = "PARK_CODE_MISSING"
+                                if current_val in ambiguous_map:
+                                    match_status = "AMBIGUOUS_CROSSWALK"
                                     eligible = False
-                                elif current_code != expected_code:
-                                    match_status = "PARK_CODE_MISMATCH"
+                                    ambiguous_matches += 1
+
+                                if eligible and can_edit != "Yes":
                                     eligible = False
-                                    code_mismatches += 1
+                                    update_reason = "USER_CANNOT_EDIT"
 
-                            if eligible:
-                                eligible_records += 1
+                                if eligible:
+                                    eligible_records += 1
 
-                            feature_updates_rows.append({
-                                "Portal URL": portal_url,
-                                "Connection Method": config.profile if not config.portal_url else "Explicit Portal",
-                                "Profile Name": config.profile or "",
-                                "Item Title": title,
-                                "Item ID": cand["item_id"],
-                                "Item Owner": cand["item_owner"],
-                                "Service URL": cand["service_url"],
-                                "Resource Type": rtype,
-                                "Layer/Table Name": lname,
-                                "Layer/Table ID": cand["layer_id"],
-                                "Layer/Table URL": cand["layer_url"],
-                                "Candidate Sequence": seq,
-                                "ObjectID": oid,
-                                "GlobalID": "",
-                                "Feature PARK_CODE": current_code,
-                                "Crosswalk PARK_CODE": expected_code,
-                                "Current PARK_NAME": current_name,
-                                "Corrected PARK_NAME": corrected_name,
-                                "Match Status": match_status,
-                                "Eligible for Update": "Yes" if eligible else "No",
-                                "Update Selected": "No",
-                                "Update Result": "",
-                                "Update Message": "",
-                            })
+                                feature_updates_rows.append({
+                                    "Portal URL": portal_url,
+                                    "Connection Method": config.profile if not config.portal_url else "Explicit Portal",
+                                    "Profile Name": config.profile or "",
+                                    "Item Title": title,
+                                    "Item ID": cand["item_id"],
+                                    "Item Owner": cand["item_owner"],
+                                    "Service URL": cand["service_url"],
+                                    "Resource Type": rtype,
+                                    "Layer/Table Name": lname,
+                                    "Layer/Table ID": cand["layer_id"],
+                                    "Layer/Table URL": cand["layer_url"],
+                                    "Candidate Sequence": seq,
+                                    "ObjectID": oid,
+                                    "GlobalID": "",
+                                    "Target Field Name": target_field,
+                                    "Current Value": current_val,
+                                    "Corrected Value": corrected_val,
+                                    "Match Status": match_status,
+                                    "Eligible for Update": "Yes" if eligible else "No",
+                                    "Update Selected": "No",
+                                    "Update Result": "",
+                                    "Update Message": update_reason,
+                                })
         except Exception as e:
             log_err(f"Error querying candidate {title} / {lname}: {e}")
             query_status = "ERROR"
@@ -170,8 +160,7 @@ def run_scan(config: ParkNameReplaceConfig, message_handler=None) -> ScanResult:
             "Layer/Table ID": cand["layer_id"],
             "Layer/Table URL": cand["layer_url"],
             "Candidate Sequence": seq,
-            "PARK_NAME Field": name_field,
-            "PARK_CODE Field Present": "Yes" if has_code else "No",
+            "Target Fields": ", ".join(target_fields),
             "Editing Supported": cand["editing_supported"],
             "Active User Can Edit": cand["active_user_can_edit"],
             "Edit Permission Status": cand["edit_permission_status"],
@@ -179,7 +168,6 @@ def run_scan(config: ParkNameReplaceConfig, message_handler=None) -> ScanResult:
             "Total Records": total_records,
             "Matching Records": matching_records,
             "Eligible Update Records": eligible_records,
-            "PARK_CODE Mismatches": code_mismatches,
             "Ambiguous Matches": ambiguous_matches,
             "Query Status": query_status,
             "Query Message": query_message,

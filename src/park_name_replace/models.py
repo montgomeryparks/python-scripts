@@ -15,8 +15,7 @@ class ParkNameReplaceConfig:
     owner: Optional[str] = None
     item_id: Optional[str] = None
 
-    park_name_field: str = "PARK_NAME"
-    park_code_field: str = "PARK_CODE"
+    fields: str = "PARK_NAME,LOCATION_NAME"
 
     candidate_layer_limit: Optional[int] = None
     discovery_item_limit: Optional[int] = None
@@ -45,3 +44,4 @@ class UpdateResult:
     broken_resources: List[Dict[str, Any]] = field(default_factory=list)
     run_info: Dict[str, Any] = field(default_factory=dict)
     output_path: Path = None
+
