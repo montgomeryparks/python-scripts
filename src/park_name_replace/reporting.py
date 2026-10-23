@@ -21,9 +21,18 @@ def write_scan_workbook(result: ScanResult, config: ParkNameReplaceConfig):
         df_summary = pd.DataFrame(columns=[
             "Portal URL", "Item Title", "Item ID", "Item Owner", "Resource Type",
             "Layer/Table Name", "Layer/Table ID", "Layer/Table URL", "Candidate Sequence",
-            "PARK_NAME Field", "PARK_CODE Field Present", "Editing Supported", "Total Records",
+            "PARK_NAME Field", "PARK_CODE Field Present", "Editing Supported", "Active User Can Edit",
+            "Edit Permission Status", "Edit Permission Reason", "Total Records",
             "Matching Records", "Eligible Update Records", "PARK_CODE Mismatches",
             "Ambiguous Matches", "Query Status", "Query Message"
+        ])
+
+    df_broken = pd.DataFrame(result.broken_resources)
+    if df_broken.empty:
+        df_broken = pd.DataFrame(columns=[
+            "Portal URL", "Item Title", "Item ID", "Item Owner", "Service URL",
+            "Resource Type", "Layer/Table Name", "Layer/Table ID", "Discovery Sequence",
+            "HTTP/Error Code", "Status", "Error Type", "Error Message"
         ])
 
     df_info = pd.DataFrame([result.run_info])
@@ -31,6 +40,7 @@ def write_scan_workbook(result: ScanResult, config: ParkNameReplaceConfig):
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         df_features.to_excel(writer, sheet_name="Feature Updates", index=False)
         df_summary.to_excel(writer, sheet_name="Layer Summary", index=False)
+        df_broken.to_excel(writer, sheet_name="Broken Resources", index=False)
         df_info.to_excel(writer, sheet_name="Run Information", index=False)
 
 def read_approved_updates(workbook_path: Path) -> pd.DataFrame:
@@ -58,9 +68,18 @@ def write_update_workbook(result: UpdateResult, config: ParkNameReplaceConfig):
         df_summary = pd.DataFrame(columns=[
             "Portal URL", "Item Title", "Item ID", "Item Owner", "Resource Type",
             "Layer/Table Name", "Layer/Table ID", "Layer/Table URL", "Candidate Sequence",
-            "PARK_NAME Field", "PARK_CODE Field Present", "Editing Supported", "Total Records",
+            "PARK_NAME Field", "PARK_CODE Field Present", "Editing Supported", "Active User Can Edit",
+            "Edit Permission Status", "Edit Permission Reason", "Total Records",
             "Matching Records", "Eligible Update Records", "PARK_CODE Mismatches",
             "Ambiguous Matches", "Query Status", "Query Message"
+        ])
+
+    df_broken = pd.DataFrame(result.broken_resources)
+    if df_broken.empty:
+        df_broken = pd.DataFrame(columns=[
+            "Portal URL", "Item Title", "Item ID", "Item Owner", "Service URL",
+            "Resource Type", "Layer/Table Name", "Layer/Table ID", "Discovery Sequence",
+            "HTTP/Error Code", "Status", "Error Type", "Error Message"
         ])
 
     df_info = pd.DataFrame([result.run_info])
@@ -68,4 +87,6 @@ def write_update_workbook(result: UpdateResult, config: ParkNameReplaceConfig):
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         df_features.to_excel(writer, sheet_name="Feature Updates", index=False)
         df_summary.to_excel(writer, sheet_name="Layer Summary", index=False)
+        df_broken.to_excel(writer, sheet_name="Broken Resources", index=False)
         df_info.to_excel(writer, sheet_name="Run Information", index=False)
+

@@ -54,7 +54,7 @@ def test_park_name_replace_tool_structure():
     assert tool.canRunInBackground is True
 
     params = tool.getParameterInfo()
-    assert len(params) == 16
+    assert len(params) == 18
 
     # Verify method presence
     assert hasattr(tool, "isLicensed")
@@ -63,3 +63,4 @@ def test_park_name_replace_tool_structure():
     assert hasattr(tool, "execute")
     assert hasattr(tool, "postExecute")
     assert tool.isLicensed() is True
+

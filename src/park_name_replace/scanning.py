@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple
 from .models import ParkNameReplaceConfig, ScanResult
 from .crosswalk import load_crosswalk, build_name_mapping
-from .discovery import find_candidate_items, get_layers_and_tables, find_field, sort_candidates, apply_candidate_limit
+from .discovery import discover_candidates_and_broken
 from .reporting import write_scan_workbook
 
 logger = logging.getLogger("park_name_replace.scanning")
@@ -31,62 +31,23 @@ def run_scan(config: ParkNameReplaceConfig, message_handler=None) -> ScanResult:
 
     df_cw = load_crosswalk(config.csv_path)
     mapping, ambiguous_map = build_name_mapping(df_cw)
-    log_info(f"Loaded crosswalk with {len(df_cw)} rows. Unique previous names: {len(mapping)}. Ambiguous mappings: {len(ambiguous_map)}")
+    log_info(f"Loaded crosswalk with {len(df_cw)} rows. Unique previous names: {len(mapping)}.")
 
     from .connection import connect_gis
     gis = connect_gis(config)
     portal_url = gis.url.rstrip("/")
     authenticated_user = gis.properties.user.username if hasattr(gis.properties, "user") and gis.properties.user else "Anonymous"
+    log_info(f"Authenticated as user: {authenticated_user}")
 
-    items = find_candidate_items(gis, config)
-    log_info(f"Discovered {len(items)} Feature Service items.")
+    log_info("Searching Feature Services and discovering candidates...")
+    candidates, broken_resources, items_inspected, discovery_complete, stop_reason = discover_candidates_and_broken(
+        gis, config, message_handler
+    )
+    log_info(f"Discovery complete. Items inspected: {items_inspected}, Candidates found: {len(candidates)}, Broken: {len(broken_resources)}, Stop reason: {stop_reason}")
 
-    discovered_candidates = []
-    for item in items:
-        item_title = getattr(item, "title", "Untitled")
-        item_id = getattr(item, "id", "")
-        item_owner = getattr(item, "owner", "")
-        service_url = getattr(item, "url", "")
+    selected_candidates = candidates
+    excluded_candidates = []
 
-        resources = get_layers_and_tables(item)
-        for res, res_type, layer_id in resources:
-            res_url = f"{service_url}/{layer_id}" if service_url else ""
-            has_park_name, actual_name_field = find_field(res, config.park_name_field)
-            if not has_park_name:
-                continue
-
-            has_park_code, actual_code_field = find_field(res, config.park_code_field if config.park_code_field else "PARK_CODE")
-
-            editing_supported = False
-            try:
-                caps = getattr(res, "properties", {}).get("capabilities", "")
-                if "Update" in caps or "Editing" in caps:
-                    editing_supported = True
-            except Exception:
-                editing_supported = True
-
-            discovered_candidates.append({
-                "portal_url": portal_url,
-                "item_title": item_title,
-                "item_id": item_id,
-                "item_owner": item_owner,
-                "service_url": service_url,
-                "resource_type": res_type,
-                "layer_name": getattr(res, "properties", {}).get("name", "Layer"),
-                "layer_id": layer_id,
-                "layer_url": res_url,
-                "resource": res,
-                "park_name_field": actual_name_field,
-                "park_code_field_present": has_park_code,
-                "actual_code_field": actual_code_field,
-                "editing_supported": editing_supported,
-            })
-
-    sorted_candidates = sort_candidates(discovered_candidates)
-    log_info(f"Qualifying candidates containing '{config.park_name_field}': {len(sorted_candidates)}")
-
-    selected_candidates, excluded_candidates = apply_candidate_limit(sorted_candidates, config.candidate_layer_limit)
-    log_info(f"Selected candidates for scan: {len(selected_candidates)} (Excluded by limit: {len(excluded_candidates)})")
 
     feature_updates_rows = []
     layer_summary_rows = []
@@ -202,7 +163,10 @@ def run_scan(config: ParkNameReplaceConfig, message_handler=None) -> ScanResult:
             "Candidate Sequence": seq,
             "PARK_NAME Field": name_field,
             "PARK_CODE Field Present": "Yes" if has_code else "No",
-            "Editing Supported": "Yes" if cand["editing_supported"] else "No",
+            "Editing Supported": cand["editing_supported"],
+            "Active User Can Edit": cand["active_user_can_edit"],
+            "Edit Permission Status": cand["edit_permission_status"],
+            "Edit Permission Reason": cand["edit_permission_reason"],
             "Total Records": total_records,
             "Matching Records": matching_records,
             "Eligible Update Records": eligible_records,
@@ -212,30 +176,9 @@ def run_scan(config: ParkNameReplaceConfig, message_handler=None) -> ScanResult:
             "Query Message": query_message,
         })
 
-    for exc in excluded_candidates:
-        layer_summary_rows.append({
-            "Portal URL": portal_url,
-            "Item Title": exc["item_title"],
-            "Item ID": exc["item_id"],
-            "Item Owner": exc["item_owner"],
-            "Resource Type": exc["resource_type"],
-            "Layer/Table Name": exc["layer_name"],
-            "Layer/Table ID": exc["layer_id"],
-            "Layer/Table URL": exc["layer_url"],
-            "Candidate Sequence": "",
-            "PARK_NAME Field": exc["park_name_field"],
-            "PARK_CODE Field Present": "Yes" if exc["park_code_field_present"] else "No",
-            "Editing Supported": "Yes" if exc["editing_supported"] else "No",
-            "Total Records": 0,
-            "Matching Records": 0,
-            "Eligible Update Records": 0,
-            "PARK_CODE Mismatches": 0,
-            "Ambiguous Matches": 0,
-            "Query Status": "EXCLUDED_BY_LIMIT",
-            "Query Message": "Excluded by candidate layer limit",
-        })
-
     run_completed = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    candidate_limit_reached = "Yes" if config.candidate_layer_limit is not None and len(candidates) >= config.candidate_layer_limit else "No"
+    discovery_item_limit_reached = "Yes" if config.discovery_item_limit is not None and items_inspected >= config.discovery_item_limit else "No"
 
     run_info = {
         "Operation Mode": "Scan",
@@ -243,14 +186,19 @@ def run_scan(config: ParkNameReplaceConfig, message_handler=None) -> ScanResult:
         "Connection Method": "Explicit Portal" if config.portal_url else "Saved Profile",
         "Profile Name": config.profile or "",
         "Portal URL": portal_url,
-        "Authenticated User": authenticated_user,
+        "Authenticated Username": authenticated_user,
         "Crosswalk Path": str(config.csv_path),
         "Output Workbook": str(config.output_path),
+        "Feature Service Items Inspected": items_inspected,
+        "Candidate Layers Found": len(candidates),
         "Candidate Layer Limit": config.candidate_layer_limit if config.candidate_layer_limit is not None else "None",
-        "Qualifying Candidates Discovered": len(sorted_candidates),
-        "Candidates Selected": len(selected_candidates),
-        "Candidate Limit Applied": "Yes" if config.candidate_layer_limit is not None else "No",
-        "Candidates Excluded by Limit": len(excluded_candidates),
+        "Candidate Limit Reached": candidate_limit_reached,
+        "Discovery Item Limit": config.discovery_item_limit if config.discovery_item_limit is not None else "None",
+        "Discovery Item Limit Reached": discovery_item_limit_reached,
+        "Discovery Page Size": config.discovery_page_size,
+        "Broken Resources Found": len(broken_resources),
+        "Discovery Complete": discovery_complete,
+        "Discovery Stop Reason": stop_reason,
         "Query Batch Size": config.query_batch_size,
         "Edit Batch Size": config.edit_batch_size,
         "Run Started": run_started,
@@ -261,6 +209,7 @@ def run_scan(config: ParkNameReplaceConfig, message_handler=None) -> ScanResult:
     result = ScanResult(
         feature_updates=feature_updates_rows,
         layer_summary=layer_summary_rows,
+        broken_resources=broken_resources,
         run_info=run_info,
         output_path=config.output_path,
     )

@@ -7,6 +7,7 @@ def setup_logging(log_file: Optional[Path] = None, level: int = logging.INFO) ->
     logger = logging.getLogger("park_name_replace")
     logger.setLevel(level)
     logger.handlers.clear()
+    logger.propagate = False
 
     formatter = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -24,3 +25,4 @@ def setup_logging(log_file: Optional[Path] = None, level: int = logging.INFO) ->
         logger.addHandler(file_handler)
 
     return logger
+

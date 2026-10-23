@@ -1,7 +1,7 @@
 import argparse
 import sys
 from pathlib import Path
-from .config import ParkNameReplaceConfig
+from .config import ParkNameReplaceConfig, load_config_from_args
 from .validation import validate_configuration
 from .logging_config import setup_logging
 from .scanning import run_scan
@@ -19,6 +19,8 @@ def main():
     parser.add_argument("--owner", help="Optional portal owner filter")
     parser.add_argument("--item-id", help="Optional Feature Service item ID")
     parser.add_argument("--candidate-layer-limit", type=int, help="Optional positive integer limiting qualifying candidate resources")
+    parser.add_argument("--discovery-item-limit", type=int, help="Maximum number of Feature Service items to inspect")
+    parser.add_argument("--discovery-page-size", type=int, default=50, help="Number of Feature Service items retrieved per portal search page (default: 50)")
     parser.add_argument("--query-batch-size", type=int, default=100, help="Query batch size (default: 100)")
     parser.add_argument("--edit-batch-size", type=int, default=100, help="Edit batch size (default: 100)")
     parser.add_argument("--output", required=True, help="Output XLSX file path")
@@ -27,23 +29,7 @@ def main():
 
     args = parser.parse_args()
 
-    config = ParkNameReplaceConfig(
-        mode=args.mode.lower(),
-        csv_path=Path(args.csv),
-        output_path=Path(args.output),
-        profile=args.profile,
-        portal_url=args.portal,
-        username=args.username,
-        owner=args.owner,
-        item_id=args.item_id,
-        park_name_field=args.field,
-        park_code_field=args.park_code_field,
-        candidate_layer_limit=args.candidate_layer_limit,
-        query_batch_size=args.query_batch_size,
-        edit_batch_size=args.edit_batch_size,
-        update_report=Path(args.update_report) if args.update_report else None,
-        log_file=Path(args.log_file) if args.log_file else None,
-    )
+    config = load_config_from_args(args)
 
     logger = setup_logging(config.log_file)
 

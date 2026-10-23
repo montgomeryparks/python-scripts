@@ -147,6 +147,25 @@ class ParkNameReplace(object):
         )
         params.append(p_candidate_layer_limit)
 
+        p_discovery_item_limit = arcpy.Parameter(
+            displayName="Discovery Item Limit",
+            name="discovery_item_limit",
+            datatype="GPLong",
+            parameterType="Optional",
+            direction="Input",
+        )
+        params.append(p_discovery_item_limit)
+
+        p_discovery_page_size = arcpy.Parameter(
+            displayName="Discovery Page Size",
+            name="discovery_page_size",
+            datatype="GPLong",
+            parameterType="Required",
+            direction="Input",
+        )
+        p_discovery_page_size.value = 50
+        params.append(p_discovery_page_size)
+
         p_query_batch_size = arcpy.Parameter(
             displayName="Query Batch Size",
             name="query_batch_size",
@@ -220,10 +239,12 @@ class ParkNameReplace(object):
         profile = parameters[4].valueAsText
         portal_url = parameters[5].valueAsText
         mode = parameters[0].valueAsText
-        update_report = parameters[14].valueAsText
+        update_report = parameters[16].valueAsText if len(parameters) > 16 else parameters[14].valueAsText
         cand_limit = parameters[11].value
-        q_batch = parameters[12].value
-        e_batch = parameters[13].value
+        disc_item_limit = parameters[12].value
+        disc_page_size = parameters[13].value
+        q_batch = parameters[14].value if len(parameters) > 14 else parameters[12].value
+        e_batch = parameters[15].value if len(parameters) > 15 else parameters[13].value
 
         if csv_path:
             if not Path(csv_path).exists():
@@ -238,19 +259,20 @@ class ParkNameReplace(object):
         if conn_method == "Explicit Portal" and not portal_url:
             parameters[5].setErrorMessage("Portal URL is required when using Explicit Portal.")
 
-        if mode == "Update" and not update_report:
-            parameters[14].setErrorMessage("Reviewed Update Workbook is required for Update mode.")
-        elif mode == "Update" and update_report and not Path(update_report).exists():
-            parameters[14].setErrorMessage(f"Reviewed Update Workbook does not exist: {update_report}")
+        update_report_param_idx = 16 if len(parameters) > 16 else 14
+        if mode == "Update" and not parameters[update_report_param_idx].valueAsText:
+            parameters[update_report_param_idx].setErrorMessage("Reviewed Update Workbook is required for Update mode.")
+        elif mode == "Update" and parameters[update_report_param_idx].valueAsText and not Path(parameters[update_report_param_idx].valueAsText).exists():
+            parameters[update_report_param_idx].setErrorMessage(f"Reviewed Update Workbook does not exist: {parameters[update_report_param_idx].valueAsText}")
 
         if cand_limit is not None and cand_limit < 1:
             parameters[11].setErrorMessage("Candidate layer limit must be greater than zero.")
 
-        if q_batch is not None and q_batch < 1:
-            parameters[12].setErrorMessage("Query batch size must be greater than zero.")
+        if disc_item_limit is not None and disc_item_limit < 1:
+            parameters[12].setErrorMessage("Discovery item limit must be greater than zero.")
 
-        if e_batch is not None and e_batch < 1:
-            parameters[13].setErrorMessage("Edit batch size must be greater than zero.")
+        if disc_page_size is not None and disc_page_size < 1:
+            parameters[13].setErrorMessage("Discovery page size must be greater than zero.")
 
         return
 
@@ -267,10 +289,12 @@ class ParkNameReplace(object):
         owner = parameters[9].valueAsText if parameters[9].valueAsText else None
         item_id = parameters[10].valueAsText if parameters[10].valueAsText else None
         candidate_layer_limit = parameters[11].value if parameters[11].value is not None else None
-        query_batch_size = int(parameters[12].value) if parameters[12].value is not None else 100
-        edit_batch_size = int(parameters[13].value) if parameters[13].value is not None else 100
-        update_report = Path(parameters[14].valueAsText) if parameters[14].valueAsText else None
-        log_file = Path(parameters[15].valueAsText) if parameters[15].valueAsText else None
+        discovery_item_limit = parameters[12].value if parameters[12].value is not None else None
+        discovery_page_size = int(parameters[13].value) if parameters[13].value is not None else 50
+        query_batch_size = int(parameters[14].value) if parameters[14].value is not None else 100
+        edit_batch_size = int(parameters[15].value) if parameters[15].value is not None else 100
+        update_report = Path(parameters[16].valueAsText) if parameters[16].valueAsText else None
+        log_file = Path(parameters[17].valueAsText) if parameters[17].valueAsText else None
 
         config = ParkNameReplaceConfig(
             mode=mode,
@@ -284,6 +308,8 @@ class ParkNameReplace(object):
             owner=owner,
             item_id=item_id,
             candidate_layer_limit=candidate_layer_limit,
+            discovery_item_limit=discovery_item_limit,
+            discovery_page_size=discovery_page_size,
             query_batch_size=query_batch_size,
             edit_batch_size=edit_batch_size,
             update_report=update_report,

@@ -19,6 +19,9 @@ class ParkNameReplaceConfig:
     park_code_field: str = "PARK_CODE"
 
     candidate_layer_limit: Optional[int] = None
+    discovery_item_limit: Optional[int] = None
+    discovery_page_size: int = 50
+
     query_batch_size: int = 100
     edit_batch_size: int = 100
 
@@ -30,6 +33,7 @@ class ParkNameReplaceConfig:
 class ScanResult:
     feature_updates: List[Dict[str, Any]] = field(default_factory=list)
     layer_summary: List[Dict[str, Any]] = field(default_factory=list)
+    broken_resources: List[Dict[str, Any]] = field(default_factory=list)
     run_info: Dict[str, Any] = field(default_factory=dict)
     output_path: Path = None
 
@@ -38,5 +42,6 @@ class ScanResult:
 class UpdateResult:
     feature_updates: List[Dict[str, Any]] = field(default_factory=list)
     layer_summary: List[Dict[str, Any]] = field(default_factory=list)
+    broken_resources: List[Dict[str, Any]] = field(default_factory=list)
     run_info: Dict[str, Any] = field(default_factory=dict)
     output_path: Path = None
