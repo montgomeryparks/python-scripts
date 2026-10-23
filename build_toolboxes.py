@@ -41,25 +41,32 @@ def process_code_and_imports(source_code):
             import_text = "\n".join(lines[node.lineno - 1 : node.end_lineno])
             is_local = False
 
-            # Check if this import references our local src.utils folder
+            # Check if this import references our local src.utils folder or is relative
             if isinstance(node, ast.ImportFrom):
-                if node.module == "src.utils":
+                if node.level and node.level > 0:
+                    # Relative import within a package (e.g. from .models import ...)
+                    is_local = True
+                elif node.module == "src.utils":
                     # Matches: from src.utils import auth, constants
                     for alias in node.names:
                         required_utils.add(alias.name)
                     is_local = True
                 elif node.module and node.module.startswith("src.utils."):
-                    # Matches: from src.utils.auth import get_portal_token
-                    util_name = node.module.split(".")[2]
-                    required_utils.add(util_name)
-                    is_local = True
+                    # Matches: from src.utils.auth import get_portal_token or from src.utils.batch_value_replace import ...
+                    parts = node.module.split(".")
+                    if len(parts) >= 3:
+                        util_name = parts[2]
+                        required_utils.add(util_name)
+                        is_local = True
             elif isinstance(node, ast.Import):
                 # Matches: import src.utils.auth
                 for alias in node.names:
                     if alias.name.startswith("src.utils."):
-                        util_name = alias.name.split(".")[2]
-                        required_utils.add(util_name)
-                        is_local = True
+                        parts = alias.name.split(".")
+                        if len(parts) >= 3:
+                            util_name = parts[2]
+                            required_utils.add(util_name)
+                            is_local = True
 
             # If it's a standard third-party or arcpy import, save it for the header
             if not is_local:
@@ -119,7 +126,7 @@ def build_toolboxes():
                 toolbox_imports.update(standard_imports)
                 utils_queue.update(local_utils)
 
-        # 2. Recursively resolve required utility files
+        # 2. Recursively resolve required utility files and packages
         resolved_utils = set()
         utils_code_blocks = []
 
@@ -129,9 +136,34 @@ def build_toolboxes():
                 continue
 
             resolved_utils.add(util_name)
+            util_path = utils_dir / util_name
             util_file = utils_dir / f"{util_name}.py"
 
-            if util_file.exists():
+            if util_path.is_dir():
+                # Package directory (e.g. batch_value_replace)
+                pkg_py_files = sorted(
+                    util_path.glob("*.py"),
+                    key=lambda p: (
+                        0
+                        if p.name == "models.py"
+                        else (2 if p.name == "__init__.py" else 1),
+                        p.name,
+                    ),
+                )
+                for pf in pkg_py_files:
+                    if pf.name == "cli.py":
+                        continue  # Exclude CLI runner from toolbox build
+                    with open(pf, "r", encoding="utf-8") as f:
+                        code = f.read()
+                        cleaned_code, standard_imports, local_utils = (
+                            process_code_and_imports(code)
+                        )
+                        utils_code_blocks.append(
+                            f"# --- src/utils/{util_name}/{pf.name} ---\n{cleaned_code}"
+                        )
+                        toolbox_imports.update(standard_imports)
+                        utils_queue.update(local_utils - resolved_utils)
+            elif util_file.exists():
                 with open(util_file, "r", encoding="utf-8") as f:
                     code = f.read()
                     cleaned_code, standard_imports, local_utils = (
@@ -146,7 +178,7 @@ def build_toolboxes():
                     utils_queue.update(local_utils - resolved_utils)
             else:
                 print(
-                    f"Warning: Utility '{util_name}.py' imported but not found in src/utils/"
+                    f"Warning: Utility '{util_name}' imported but not found as file or directory in src/utils/"
                 )
 
         # 3. Clean and assemble the final imports header
