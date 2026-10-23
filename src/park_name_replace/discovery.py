@@ -82,20 +82,20 @@ def iter_feature_services(gis: GIS, config: ParkNameReplaceConfig):
         
     query_str = " AND ".join(query_parts) if query_parts else 'type:"Feature Service"'
     page_size = config.discovery_page_size
-    start = 1
+    skip = 0
     
     while True:
         try:
-            items = gis.content.search(query=query_str, start=start, max_items=page_size)
+            items = gis.content.search(query=query_str, skip=skip, max_items=page_size)
             if not items:
                 break
             for item in items:
                 yield item
             if len(items) < page_size:
                 break
-            start += len(items)
+            skip += len(items)
         except Exception as e:
-            logger.warning(f"Error searching portal items at start={start}: {e}")
+            logger.warning(f"Error searching portal items at skip={skip}: {e}")
             break
 
 def get_layers_and_tables(item) -> List[Tuple[Any, str, int]]:
