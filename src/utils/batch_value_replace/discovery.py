@@ -84,9 +84,46 @@ def classify_error(exc: Exception) -> tuple[str, str, int, str]:
     return status, err_type, code, clean_msg
 
 
+def is_user_admin(gis: GIS) -> bool:
+    try:
+        user = getattr(gis, "users", None) and gis.users.me
+        if user:
+            role = getattr(user, "role", "") or ""
+            role_lower = role.lower()
+            if "admin" in role_lower or role_lower in ["org_admin", "administrator"]:
+                return True
+        props = getattr(gis, "properties", {}) or {}
+        uprops = props.get("user", {}) or {}
+        urole = str(uprops.get("role", "")).lower()
+        if "admin" in urole:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def is_feature_layer_view(item) -> bool:
+    try:
+        tks = getattr(item, "typeKeywords", []) or []
+        tks_lower = [str(tk).lower() for tk in tks]
+        if (
+            "view service" in tks_lower
+            or "service view" in tks_lower
+            or "view" in tks_lower
+        ):
+            return True
+        props = getattr(item, "properties", {}) or {}
+        if props.get("isView") is True or props.get("is_view") is True:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def determine_edit_permission(
     gis: GIS, item: Any, resource: Any
 ) -> tuple[str, str, str]:
+    admin_mode = is_user_admin(gis)
     try:
         caps = getattr(resource, "properties", {}).get("capabilities", "")
         if isinstance(caps, list):
@@ -97,6 +134,12 @@ def determine_edit_permission(
             "update" in caps_lower or "editing" in caps_lower or "create" in caps_lower
         )
         if not has_update:
+            if admin_mode:
+                return (
+                    "Yes",
+                    "ADMIN_OVERRIDE",
+                    "Administrator privileges override layer read-only capabilities.",
+                )
             return (
                 "No",
                 "READ_ONLY",
@@ -105,10 +148,22 @@ def determine_edit_permission(
 
         is_editable_item = getattr(item, "editable", True)
         if not is_editable_item:
+            if admin_mode:
+                return (
+                    "Yes",
+                    "ADMIN_OVERRIDE",
+                    "Administrator privileges override item non-editable flag.",
+                )
             return "No", "ACCESS_DENIED", "Item is marked non-editable."
 
         return "Yes", "EDITABLE", "Resource supports updates and editing."
     except Exception as e:
+        if admin_mode:
+            return (
+                "Yes",
+                "ADMIN_OVERRIDE",
+                f"Administrator override despite permission check error: {str(e)[:30]}",
+            )
         logger.debug(f"Could not determine edit permission: {e}")
         return "Unknown", "UNKNOWN", f"Could not determine permissions: {str(e)[:50]}"
 
@@ -210,6 +265,9 @@ def discover_candidates_and_broken(
         item_cands = []
         item_non_cands = []
         item_broken = []
+
+        if is_feature_layer_view(item):
+            return item_cands, item_non_cands, item_broken
 
         try:
             resources = get_layers_and_tables(item)
