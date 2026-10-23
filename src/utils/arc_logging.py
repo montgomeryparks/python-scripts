@@ -14,9 +14,11 @@ class ArcGISLogHandler(logging.Handler):
             arcpy.AddMessage(msg)
 
 
-def setup_arcgis_logging(level=logging.DEBUG):
+def setup_arcgis_logging(
+    level: int = logging.DEBUG, logger_name: str = "biomon_tools"
+) -> logging.Logger:
     """Configures a named logger to send messages to ArcGIS, avoiding duplicates."""
-    logger = logging.getLogger("champion_tools")
+    logger = logging.getLogger(logger_name)
     logger.setLevel(level)
 
     # CRITICAL: Stop messages from bubbling up to the polluted global root logger
@@ -30,3 +32,4 @@ def setup_arcgis_logging(level=logging.DEBUG):
     handler.setFormatter(formatter)
 
     logger.addHandler(handler)
+    return logger
