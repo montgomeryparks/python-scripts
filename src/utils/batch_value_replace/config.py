@@ -21,4 +21,5 @@ def load_config_from_args(args) -> BatchValueReplaceConfig:
         edit_batch_size=args.edit_batch_size,
         update_report=Path(args.update_report) if args.update_report else None,
         log_file=Path(args.log_file) if args.log_file else None,
+        exclude_tags=getattr(args, "exclude_tags", None),
     )

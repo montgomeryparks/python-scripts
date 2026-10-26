@@ -27,6 +27,7 @@ class BatchValueReplaceConfig:
 
     update_report: Path | None = None
     log_file: Path | None = None
+    exclude_tags: str | None = None
 
 
 # Backwards-compatibility alias

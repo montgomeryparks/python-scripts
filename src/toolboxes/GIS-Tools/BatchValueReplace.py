@@ -192,6 +192,15 @@ class BatchValueReplace:
             p_update_report.filter.list = ["xlsx"]
         params.append(p_update_report)
 
+        p_exclude_tags = arcpy.Parameter(
+            displayName="Exclude Tags",
+            name="exclude_tags",
+            datatype="GPString",
+            parameterType="Optional",
+            direction="Input",
+        )
+        params.append(p_exclude_tags)
+
         p_log_file = arcpy.Parameter(
             displayName="Log File",
             name="log_file",
@@ -313,8 +322,11 @@ class BatchValueReplace:
         update_report = (
             Path(parameters[15].valueAsText) if parameters[15].valueAsText else None
         )
+        exclude_tags = (
+            parameters[16].valueAsText if parameters[16].valueAsText else None
+        )
         log_file = (
-            Path(parameters[16].valueAsText) if parameters[16].valueAsText else None
+            Path(parameters[17].valueAsText) if parameters[17].valueAsText else None
         )
 
         config = BatchValueReplaceConfig(
@@ -334,6 +346,7 @@ class BatchValueReplace:
             edit_batch_size=edit_batch_size,
             update_report=update_report,
             log_file=log_file,
+            exclude_tags=exclude_tags,
         )
 
         handler = ArcPyMessageHandler()

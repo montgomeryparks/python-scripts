@@ -64,7 +64,7 @@ def test_batch_value_replace_tool_structure():
     assert tool.canRunInBackground is True
 
     params = tool.getParameterInfo()
-    assert len(params) == 17
+    assert len(params) == 18
 
     assert hasattr(tool, "isLicensed")
     assert hasattr(tool, "updateParameters")

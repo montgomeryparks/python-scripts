@@ -65,6 +65,9 @@ def main():
     )
     parser.add_argument("--output", required=True, help="Output XLSX file path")
     parser.add_argument(
+        "--exclude-tags", help="Optional comma-separated tags to exclude (e.g. Azure)"
+    )
+    parser.add_argument(
         "--update-report", help="Reviewed scan report used for update mode"
     )
     parser.add_argument("--log-file", help="Optional log file path")

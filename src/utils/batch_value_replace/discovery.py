@@ -269,6 +269,12 @@ def discover_candidates_and_broken(
         if is_feature_layer_view(item):
             return item_cands, item_non_cands, item_broken
 
+        if config and config.exclude_tags:
+            ex_tags = [t.strip().lower() for t in config.exclude_tags.split(",") if t.strip()]
+            item_tags = [str(t).lower() for t in getattr(item, "tags", []) or []]
+            if any(et in item_tags for et in ex_tags):
+                return item_cands, item_non_cands, item_broken
+
         try:
             resources = get_layers_and_tables(item)
         except Exception as exc:
@@ -296,6 +302,10 @@ def discover_candidates_and_broken(
             return item_cands, item_non_cands, item_broken
 
         for res, res_type, layer_id in resources:
+            res_props = getattr(res, "properties", {}) or {}
+            if res_props.get("isView") is True or res_props.get("is_view") is True:
+                continue
+
             res_url = f"{service_url}/{layer_id}" if service_url else ""
             layer_name = "Layer"
             try:
