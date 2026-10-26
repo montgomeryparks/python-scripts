@@ -120,11 +120,71 @@ def is_feature_layer_view(item) -> bool:
     return False
 
 
+def is_external_or_utility_service(gis: GIS, item: Any, resource: Any) -> bool:
+    try:
+        urls_to_check = []
+        if item:
+            if hasattr(item, "url") and item.url:
+                urls_to_check.append(str(item.url))
+        if resource:
+            if hasattr(resource, "url") and resource.url:
+                urls_to_check.append(str(resource.url))
+            elif hasattr(resource, "_url") and resource._url:
+                urls_to_check.append(str(resource._url))
+            props = getattr(resource, "properties", {}) or {}
+            if "url" in props:
+                urls_to_check.append(str(props["url"]))
+
+        combined_url = " ".join(urls_to_check).lower()
+        if not combined_url:
+            return False
+
+        if "utility.arcgis.com" in combined_url or "usrsvcs" in combined_url:
+            return True
+
+        portal_url = getattr(gis, "url", "")
+        org_id = None
+        try:
+            gis_props = getattr(gis, "properties", None)
+            if gis_props:
+                if hasattr(gis_props, "id"):
+                    org_id = getattr(gis_props, "id", None)
+                elif isinstance(gis_props, dict):
+                    org_id = gis_props.get("id") or gis_props.get("orgId")
+                elif hasattr(gis_props, "get"):
+                    org_id = gis_props.get("id") or gis_props.get("orgId")
+        except Exception:
+            pass
+
+        from urllib.parse import urlparse
+        portal_parsed = urlparse(portal_url)
+        portal_netloc = portal_parsed.netloc.lower()
+
+        if org_id:
+            if str(org_id).lower() not in combined_url:
+                return True
+        else:
+            service_parsed_list = [urlparse(u) for u in urls_to_check if u]
+            for sp in service_parsed_list:
+                if sp.netloc and portal_netloc and sp.netloc.lower() != portal_netloc:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def determine_edit_permission(
     gis: GIS, item: Any, resource: Any
 ) -> tuple[str, str, str]:
     admin_mode = is_user_admin(gis)
     try:
+        if is_external_or_utility_service(gis, item, resource):
+            return (
+                "No",
+                "ACCESS_DENIED",
+                "Service belongs to an outside portal or utility server and cannot be edited via admin override.",
+            )
+
         caps = getattr(resource, "properties", {}).get("capabilities", "")
         if isinstance(caps, list):
             caps = ",".join(caps)
