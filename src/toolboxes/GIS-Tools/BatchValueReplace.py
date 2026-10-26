@@ -3,6 +3,7 @@ from pathlib import Path
 import arcpy
 import urllib3
 
+from src.utils.auth import get_portal_token
 from src.utils.batch_value_replace import BatchValueReplaceConfig, run_scan, run_update
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -24,7 +25,8 @@ class BatchValueReplace:
         self.label = "Batch Value Replace"
         self.description = (
             "Scans ArcGIS feature layers and tables for specified old values "
-            "and optionally replaces approved values with corrected values across parameterized fields."
+            "and optionally replaces approved values with corrected values across parameterized fields, "
+            "authenticating via the active ArcGIS Pro portal session."
         )
         self.canRunInBackground = True
 
@@ -64,46 +66,6 @@ class BatchValueReplace:
         if p_output.filter:
             p_output.filter.list = ["xlsx"]
         params.append(p_output)
-
-        p_conn_method = arcpy.Parameter(
-            displayName="ArcGIS Connection Method",
-            name="connection_method",
-            datatype="GPString",
-            parameterType="Required",
-            direction="Input",
-        )
-        p_conn_method.filter.type = "ValueList"
-        p_conn_method.filter.list = ["Saved Profile", "Explicit Portal"]
-        p_conn_method.value = "Saved Profile"
-        params.append(p_conn_method)
-
-        p_profile = arcpy.Parameter(
-            displayName="ArcGIS Profile",
-            name="profile",
-            datatype="GPString",
-            parameterType="Optional",
-            direction="Input",
-        )
-        p_profile.value = "work"
-        params.append(p_profile)
-
-        p_portal_url = arcpy.Parameter(
-            displayName="Portal URL",
-            name="portal_url",
-            datatype="GPString",
-            parameterType="Optional",
-            direction="Input",
-        )
-        params.append(p_portal_url)
-
-        p_username = arcpy.Parameter(
-            displayName="Username",
-            name="username",
-            datatype="GPString",
-            parameterType="Optional",
-            direction="Input",
-        )
-        params.append(p_username)
 
         p_fields = arcpy.Parameter(
             displayName="Target Fields",
@@ -216,35 +178,22 @@ class BatchValueReplace:
         return True
 
     def updateParameters(self, parameters):
-        conn_method = parameters[3].valueAsText
         mode = parameters[0].valueAsText
 
-        if conn_method == "Explicit Portal":
-            parameters[4].enabled = False
-            parameters[5].enabled = True
-            parameters[6].enabled = True
-        else:
-            parameters[4].enabled = True
-            parameters[5].enabled = False
-            parameters[6].enabled = False
-
         if mode == "Update":
-            parameters[15].enabled = True
-            parameters[14].enabled = True
+            parameters[11].enabled = True
+            parameters[10].enabled = True
         else:
-            parameters[15].enabled = False
+            parameters[11].enabled = False
 
     def updateMessages(self, parameters):
         csv_path = parameters[1].valueAsText
         output_path = parameters[2].valueAsText
-        conn_method = parameters[3].valueAsText
-        profile = parameters[4].valueAsText
-        portal_url = parameters[5].valueAsText
         mode = parameters[0].valueAsText
-        update_report = parameters[15].valueAsText
-        cand_limit = parameters[10].value
-        disc_item_limit = parameters[11].value
-        disc_page_size = parameters[12].value
+        update_report = parameters[11].valueAsText
+        cand_limit = parameters[6].value
+        disc_item_limit = parameters[7].value
+        disc_page_size = parameters[8].value
 
         if csv_path:
             if not Path(csv_path).exists():
@@ -255,37 +204,27 @@ class BatchValueReplace:
         if output_path and not output_path.lower().endswith(".xlsx"):
             parameters[2].setErrorMessage("Output workbook must be an .xlsx file.")
 
-        if conn_method == "Saved Profile" and not profile:
-            parameters[4].setErrorMessage(
-                "ArcGIS Profile is required when using Saved Profile."
-            )
-
-        if conn_method == "Explicit Portal" and not portal_url:
-            parameters[5].setErrorMessage(
-                "Portal URL is required when using Explicit Portal."
-            )
-
         if mode == "Update" and not update_report:
-            parameters[15].setErrorMessage(
+            parameters[11].setErrorMessage(
                 "Reviewed Update Workbook is required for Update mode."
             )
         elif mode == "Update" and update_report and not Path(update_report).exists():
-            parameters[15].setErrorMessage(
+            parameters[11].setErrorMessage(
                 f"Reviewed Update Workbook does not exist: {update_report}"
             )
 
         if cand_limit is not None and cand_limit < 1:
-            parameters[10].setErrorMessage(
+            parameters[6].setErrorMessage(
                 "Candidate layer limit must be greater than zero."
             )
 
         if disc_item_limit is not None and disc_item_limit < 1:
-            parameters[11].setErrorMessage(
+            parameters[7].setErrorMessage(
                 "Discovery item limit must be greater than zero."
             )
 
         if disc_page_size is not None and disc_page_size < 1:
-            parameters[12].setErrorMessage(
+            parameters[8].setErrorMessage(
                 "Discovery page size must be greater than zero."
             )
 
@@ -293,49 +232,38 @@ class BatchValueReplace:
         mode = parameters[0].valueAsText.lower()
         csv_path = Path(parameters[1].valueAsText)
         output_path = Path(parameters[2].valueAsText)
-        conn_method = parameters[3].valueAsText
-        profile = parameters[4].valueAsText if conn_method == "Saved Profile" else None
-        portal_url = (
-            parameters[5].valueAsText if conn_method == "Explicit Portal" else None
-        )
-        username = (
-            parameters[6].valueAsText if conn_method == "Explicit Portal" else None
-        )
-        fields = parameters[7].valueAsText or "PARK_NAME,LOCATION_NAME"
-        owner = parameters[8].valueAsText if parameters[8].valueAsText else None
-        item_id = parameters[9].valueAsText if parameters[9].valueAsText else None
+        fields = parameters[3].valueAsText or "PARK_NAME,LOCATION_NAME"
+        owner = parameters[4].valueAsText if parameters[4].valueAsText else None
+        item_id = parameters[5].valueAsText if parameters[5].valueAsText else None
         candidate_layer_limit = (
-            parameters[10].value if parameters[10].value is not None else None
+            parameters[6].value if parameters[6].value is not None else None
         )
         discovery_item_limit = (
-            parameters[11].value if parameters[11].value is not None else None
+            parameters[7].value if parameters[7].value is not None else None
         )
         discovery_page_size = (
-            int(parameters[12].value) if parameters[12].value is not None else 50
+            int(parameters[8].value) if parameters[8].value is not None else 50
         )
         query_batch_size = (
-            int(parameters[13].value) if parameters[13].value is not None else 100
+            int(parameters[9].value) if parameters[9].value is not None else 100
         )
         edit_batch_size = (
-            int(parameters[14].value) if parameters[14].value is not None else 100
+            int(parameters[10].value) if parameters[10].value is not None else 100
         )
         update_report = (
-            Path(parameters[15].valueAsText) if parameters[15].valueAsText else None
+            Path(parameters[11].valueAsText) if parameters[11].valueAsText else None
         )
         exclude_tags = (
-            parameters[16].valueAsText if parameters[16].valueAsText else None
+            parameters[12].valueAsText if parameters[12].valueAsText else None
         )
         log_file = (
-            Path(parameters[17].valueAsText) if parameters[17].valueAsText else None
+            Path(parameters[13].valueAsText) if parameters[13].valueAsText else None
         )
 
         config = BatchValueReplaceConfig(
             mode=mode,
             csv_path=csv_path,
             output_path=output_path,
-            profile=profile,
-            portal_url=portal_url,
-            username=username,
             fields=fields,
             owner=owner,
             item_id=item_id,
