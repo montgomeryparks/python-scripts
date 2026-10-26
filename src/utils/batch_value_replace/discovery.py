@@ -130,33 +130,45 @@ def determine_edit_permission(
             caps = ",".join(caps)
         caps_lower = str(caps).lower()
 
-        has_update = (
+        has_standard_edit = (
             "update" in caps_lower or "editing" in caps_lower or "create" in caps_lower
         )
-        if not has_update:
+        is_editable_item = getattr(item, "editable", True)
+
+        if has_standard_edit and is_editable_item:
+            return "Yes", "EDITABLE", "Resource is configured for editing."
+
+        adv_caps = getattr(resource, "properties", {}).get("advancedEditingCapabilities", {}) or {}
+        supports_async_apply = adv_caps.get("supportsAsyncApplyEdits") is True
+        supports_apply = getattr(resource, "properties", {}).get("supportsApplyEdits") is True or adv_caps.get("supportsApplyEdits") is True or "applyedits" in caps_lower
+
+        supports_any_edits = has_standard_edit or supports_async_apply or supports_apply
+
+        if supports_any_edits or not is_editable_item:
             if admin_mode:
                 return (
                     "Yes",
                     "ADMIN_OVERRIDE",
-                    "Administrator privileges override layer read-only capabilities.",
+                    "Administrator privileges override layer read-only configuration via supported apply edits.",
                 )
             return (
                 "No",
-                "READ_ONLY",
-                "Layer capabilities do not include Update or Editing.",
+                "ACCESS_DENIED",
+                "Layer requires administrator privileges for edit override.",
             )
 
-        is_editable_item = getattr(item, "editable", True)
-        if not is_editable_item:
-            if admin_mode:
-                return (
-                    "Yes",
-                    "ADMIN_OVERRIDE",
-                    "Administrator privileges override item non-editable flag.",
-                )
-            return "No", "ACCESS_DENIED", "Item is marked non-editable."
+        if admin_mode and (supports_async_apply or supports_apply):
+            return (
+                "Yes",
+                "ADMIN_OVERRIDE",
+                "Administrator privileges override layer read-only configuration via supported apply edits.",
+            )
 
-        return "Yes", "EDITABLE", "Resource supports updates and editing."
+        return (
+            "No",
+            "READ_ONLY",
+            "Layer capabilities do not include update/editing and do not support apply edits.",
+        )
     except Exception as e:
         if admin_mode:
             return (

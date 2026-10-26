@@ -5,7 +5,7 @@ import pandas as pd
 
 from .connection import connect_gis
 from .crosswalk import build_name_mapping, load_crosswalk
-from .discovery import classify_error, get_layers_and_tables
+from .discovery import classify_error, determine_edit_permission, get_layers_and_tables
 from .models import BatchValueReplaceConfig, UpdateResult
 from .reporting import read_approved_updates, write_update_workbook
 
@@ -170,19 +170,13 @@ def run_update(config: BatchValueReplaceConfig, message_handler=None) -> UpdateR
             res_url = f"{service_url}/{layer_id}" if service_url else ""
             layer_name = getattr(res, "properties", {}).get("name", "Layer")
 
-            editing_supported = False
-            try:
-                caps = getattr(res, "properties", {}).get("capabilities", "")
-                if "Update" in caps or "Editing" in caps:
-                    editing_supported = True
-            except Exception:
-                editing_supported = True
+            can_edit, perm_status, perm_reason = determine_edit_permission(gis, item, res)
 
             layer_successful = 0
             layer_failed = 0
             layer_skipped = 0
 
-            if editing_supported:
+            if can_edit == "Yes":
                 batch_size = config.edit_batch_size
                 for i in range(0, len(res_updates), batch_size):
                     batch = res_updates[i : i + batch_size]
@@ -315,8 +309,8 @@ def run_update(config: BatchValueReplaceConfig, message_handler=None) -> UpdateR
                     feature_updates_out.append(
                         {
                             **row,
-                            "Update Result": "LAYER_NOT_EDITABLE",
-                            "Update Message": "Layer does not support updates or editing capabilities.",
+                            "Update Result": "SKIPPED_READ_ONLY",
+                            "Update Message": f"Layer skipped due to read-only status: {perm_reason}",
                         }
                     )
 
