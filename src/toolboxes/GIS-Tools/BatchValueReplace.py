@@ -179,9 +179,9 @@ class BatchValueReplace:
 
     def updateParameters(self, parameters):
         mode = parameters[0].valueAsText
-
         if mode == "Update":
             parameters[11].enabled = True
+            parameters[10].enabled = True
             parameters[10].enabled = True
         else:
             parameters[11].enabled = False
