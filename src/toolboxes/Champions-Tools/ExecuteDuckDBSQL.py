@@ -3,7 +3,6 @@ import re
 
 import arcpy
 import duckdb
-from shapely import wkb
 
 from src.utils.arc_logging import setup_arcgis_logging
 from src.utils.data_conversion import (
@@ -288,12 +287,14 @@ class ExecuteDuckDBSQL:
                     and "GEOMWKB" in df.columns
                 ):
                     try:
-                        geoms = [wkb.loads(w) for w in df["GEOMWKB"] if w]
-                        if geoms:
-                            minx = min(g.bounds[0] for g in geoms)
-                            miny = min(g.bounds[1] for g in geoms)
-                            maxx = max(g.bounds[2] for g in geoms)
-                            maxy = max(g.bounds[3] for g in geoms)
+                        extents = [
+                            arcpy.FromWKB(bytes(w)).extent for w in df["GEOMWKB"] if w
+                        ]
+                        if extents:
+                            minx = min(e.XMin for e in extents)
+                            miny = min(e.YMin for e in extents)
+                            maxx = max(e.XMax for e in extents)
+                            maxy = max(e.YMax for e in extents)
 
                             layer_env = arcpy.Polygon(
                                 arcpy.Array(
