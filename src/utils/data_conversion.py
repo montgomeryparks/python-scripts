@@ -9,7 +9,6 @@ import duckdb
 import pandas as pd
 import requests
 import urllib3
-from shapely.geometry import shape
 
 from src.utils.auth import get_portal_token
 
@@ -110,8 +109,8 @@ def featureservice_to_df(
         geom_dict = feat.get("geometry", None)
         if geom_dict:
             try:
-                props["GEOMWKB"] = shape(geom_dict).wkb
-            except ValueError as err:
+                props["GEOMWKB"] = bytes(arcpy.AsShape(geom_dict, False).WKB)
+            except (ValueError, RuntimeError, TypeError) as err:
                 raise ValueError(f"Geometry failed to read: {geom_dict}") from err
         else:
             props["GEOMWKB"] = None
