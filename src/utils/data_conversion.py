@@ -289,9 +289,12 @@ def featureclass_to_df(
 
     df = pd.DataFrame(records, columns=cursor_fields)
 
-    if is_spatial and "SHAPE@WKB" in df.columns:
-        df["GEOMWKB"] = df["SHAPE@WKB"].apply(lambda x: bytes(x) if x else None)
-        df.drop(columns=["SHAPE@WKB"], inplace=True)
+    if is_spatial:
+        if "SHAPE@WKB" in df.columns:
+            df["GEOMWKB"] = df["SHAPE@WKB"].apply(lambda x: bytes(x) if x is not None else None)
+            df.drop(columns=["SHAPE@WKB"], inplace=True)
+        else:
+            df["GEOMWKB"] = pd.Series(dtype="object")
 
     return df
 

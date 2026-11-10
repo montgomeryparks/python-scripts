@@ -317,11 +317,26 @@ class ExecuteDuckDBSQL:
                             f"Could not calculate extent for {clean_name}: {e}"
                         )
 
+                if df.empty:
+                    logger.warning(
+                        f"Layer '{clean_name}' returned 0 rows with the current filter/selection. Creating empty view."
+                    )
+                    # Register dummy schema so downstream queries don't fail with Catalog Error
+                    col_defs = [f'"{col}" VARCHAR' for col in selected_field_names if col != "GEOMWKB"]
+                    if getattr(lyr, "isFeatureLayer", False):
+                        col_defs.append("GEOM GEOMETRY")
+                    con.execute(f"CREATE TABLE {clean_name} ({', '.join(col_defs)})")
+                    logger.info(f"Registered {clean_name} (0 rows - empty schema)")
+                    continue
+
                 raw_name = f"_raw_{clean_name}"
                 con.register(raw_name, df)
 
                 if "GEOMWKB" in df.columns:
-                    view_sql = f"CREATE VIEW {clean_name} AS SELECT * EXCLUDE (GEOMWKB), ST_GeomFromWKB(GEOMWKB) AS GEOM FROM {raw_name}"
+                    view_sql = (
+                        f"CREATE VIEW {clean_name} AS SELECT * EXCLUDE (GEOMWKB), "
+                        f"ST_GeomFromWKB(CAST(GEOMWKB AS BLOB)) AS GEOM FROM {raw_name}"
+                    )
                     con.execute(view_sql)
                 else:
                     con.execute(f"CREATE VIEW {clean_name} AS SELECT * FROM {raw_name}")
